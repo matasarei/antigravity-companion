@@ -117,7 +117,9 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         ApplicationManager.getApplication().invokeLater {
             try {
                 val tm = org.jetbrains.plugins.terminal.TerminalToolWindowManager.getInstance(project)
-                val widget = tm.createLocalShellWidget(project.basePath, "Antigravity")
+                // 3-arg overload (workingDirectory, tabName, requestFocus) — the 2-arg
+                // overload is deprecated and scheduled for removal.
+                val widget = tm.createLocalShellWidget(project.basePath, "Antigravity", true)
                 widget.executeCommand(quoteForShell(agyPath))
                 log.info("Spawned agy terminal session for project $projectHash (binary: $agyPath)")
             } catch (e: Exception) {

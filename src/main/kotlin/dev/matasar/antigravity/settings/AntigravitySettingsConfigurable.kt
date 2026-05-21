@@ -2,6 +2,7 @@ package dev.matasar.antigravity.settings
 
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.Configurable
+import com.intellij.openapi.ui.TextBrowseFolderListener
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.FormBuilder
@@ -20,14 +21,16 @@ class AntigravitySettingsConfigurable : Configurable {
     override fun createComponent(): JComponent {
         val settings = AntigravitySettings.getInstance()
 
+        // Replace the deprecated 4-arg addBrowseFolderListener(title, description, project, descriptor)
+        // with the non-deprecated form: title and description live on the descriptor itself,
+        // and the listener wraps it.
+        val descriptor = FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor()
+            .withTitle("Select the agy Executable")
+            .withDescription("Choose the location of the agy CLI binary the plugin should launch.")
+
         val field = TextFieldWithBrowseButton().apply {
             text = settings.agyPath
-            addBrowseFolderListener(
-                "Select the agy Executable",
-                "Choose the location of the agy CLI binary the plugin should launch.",
-                null,
-                FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor(),
-            )
+            addBrowseFolderListener(TextBrowseFolderListener(descriptor))
             textField.toolTipText = "Absolute path to the agy executable"
         }
         pathField = field

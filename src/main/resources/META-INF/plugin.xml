@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.matasar.antigravity-companion</id>
     <name>Antigravity Companion</name>
-    <version>1.0.1</version>
+    <version>1.1.0</version>
 
     <vendor email="matasar.ei@gmail.com" url="https://github.com/ematasar/antigravity-phpstorm">Yevhen Matasar</vendor>
 
@@ -35,6 +35,13 @@
     ]]></description>
 
     <change-notes><![CDATA[
+      <h3>1.1.0</h3>
+      <ul>
+        <li>New MCP tool <code>ide_show_diff</code>: when <code>agy</code> proposes a file edit it now pops a native side-by-side IntelliJ diff dialog with <b>Reject</b> / <b>Accept</b> / <b>Accept All</b> buttons. The accepted file is written through the IDE's write action (so undo and VCS see it correctly).</li>
+        <li><b>Accept All</b> flips per-session auto-accept; subsequent <code>ide_show_diff</code> calls skip the dialog until <code>agy</code> is restarted.</li>
+        <li>Out-of-workspace edits are refused for safety.</li>
+        <li>Stronger MCP <code>instructions</code> directing the agent to route every file edit through <code>ide_show_diff</code> instead of its built-in write tools.</li>
+      </ul>
       <h3>1.0.1</h3>
       <ul>
         <li>Replaced the deprecated <code>TerminalToolWindowManager.createLocalShellWidget(...)</code> call with the non-deprecated <code>createNewSession(runner, TerminalTabState)</code> path — clears the "scheduled for removal" compatibility warning on newer IDEs.</li>

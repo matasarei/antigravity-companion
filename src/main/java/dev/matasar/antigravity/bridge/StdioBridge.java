@@ -6,7 +6,7 @@ import java.io.OutputStream;
 import java.net.Socket;
 
 /**
- * Tiny stdio &lt;-&gt; TCP relay used by the MCP bridge scripts the plugin generates.
+ * Tiny stdio-to-TCP relay used by the MCP bridge scripts the plugin generates.
  *
  * <p>The plugin runs an MCP server on a loopback TCP port; the Antigravity CLI ({@code agy})
  * connects to MCP servers over stdio. The bridge script spawned by {@code agy} invokes this

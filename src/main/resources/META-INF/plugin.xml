@@ -1,0 +1,81 @@
+<idea-plugin>
+    <id>dev.matasar.antigravity-companion</id>
+    <name>Antigravity Companion</name>
+    <version>1.0.0</version>
+
+    <vendor email="yevhen@matasar.dev" url="https://github.com/ematasar/antigravity-phpstorm">Yevhen Matasar</vendor>
+
+    <description><![CDATA[
+      <p>
+        Bridges the <a href="https://antigravity.google">Antigravity</a> CLI (<code>agy</code>)
+        with PhpStorm so the agent can see your active file, selection, open tabs, and
+        inspection diagnostics on demand.
+      </p>
+      <p>
+        The plugin runs a small local MCP (Model Context Protocol) server inside the IDE
+        and registers itself in <code>~/.gemini/config/mcp_config.json</code>. Whenever
+        <code>agy</code> needs editor context it calls the plugin over MCP — no env vars,
+        no lockfiles, no platform-specific bridges.
+      </p>
+      <p>
+        Click the <em>Start Antigravity Session</em> toolbar button (top-right) to launch
+        <code>agy</code> in an IDE-embedded terminal pre-wired to the running project.
+      </p>
+      <h3>Exposed tools</h3>
+      <ul>
+        <li><code>ide_get_active_editor</code> — current file path, language, cursor, selection, content.</li>
+        <li><code>ide_get_open_files</code> — every file currently open in an editor tab.</li>
+        <li><code>ide_get_diagnostics</code> — inspections/errors/warnings for a file.</li>
+        <li><code>ide_open_file</code> — open a file at an optional line/column.</li>
+      </ul>
+      <p>
+        Configure the path to your <code>agy</code> binary under
+        <strong>Settings → Tools → Antigravity Companion</strong>.
+      </p>
+    ]]></description>
+
+    <change-notes><![CDATA[
+      <h3>1.0.0</h3>
+      <ul>
+        <li>Initial public release.</li>
+        <li>Local MCP server with four tools: <code>ide_get_active_editor</code>, <code>ide_get_open_files</code>, <code>ide_get_diagnostics</code>, <code>ide_open_file</code>.</li>
+        <li>Cross-platform stdio bridge using the IDE's bundled JBR (macOS, Linux, Windows).</li>
+        <li>Settings panel under <em>Tools → Antigravity Companion</em> for the <code>agy</code> binary path; auto-detects <code>$PATH</code>, <code>~/.local/bin</code>, <code>/opt/homebrew/bin</code>, <code>/usr/local/bin</code> when blank.</li>
+      </ul>
+    ]]></change-notes>
+
+    <idea-version since-build="232" until-build="262.*"/>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+    <depends>org.jetbrains.plugins.terminal</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationService
+            serviceImplementation="dev.matasar.antigravity.settings.AntigravitySettings"/>
+        <applicationConfigurable
+            parentId="tools"
+            instance="dev.matasar.antigravity.settings.AntigravitySettingsConfigurable"
+            id="dev.matasar.antigravity.settings"
+            displayName="Antigravity Companion"/>
+
+        <projectService
+            serviceImplementation="dev.matasar.antigravity.service.AntigravityCompanionService"/>
+        <postStartupActivity
+            implementation="dev.matasar.antigravity.startup.AntigravityStartupActivity"/>
+        <notificationGroup
+            id="Antigravity Companion"
+            displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <action
+            id="dev.matasar.antigravity.StartSessionAction"
+            class="dev.matasar.antigravity.action.StartSessionAction"
+            text="Start Antigravity Session"
+            description="Launch a new agy terminal session for this project"
+            icon="/icons/antigravity.svg">
+            <add-to-group group-id="MainToolbarRight" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

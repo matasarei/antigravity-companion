@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <defs>
+    <linearGradient id="antigravGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8AB4F8"/>
+      <stop offset="100%" stop-color="#C58AF9"/>
+    </linearGradient>
+  </defs>
+  <!-- Sleek levitating brand lightning bolt -->
+  <path d="M9 1L2 9h5v6l7-8H9V1z" fill="url(#antigravGrad)"/>
+</svg>

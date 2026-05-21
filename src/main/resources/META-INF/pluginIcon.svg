@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E1F22"/>
+      <stop offset="100%" stop-color="#2B2D30"/>
+    </linearGradient>
+    <linearGradient id="boltGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8AB4F8"/>
+      <stop offset="100%" stop-color="#C58AF9"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <!-- Background Rounded Rect in PhpStorm style -->
+  <rect width="40" height="40" rx="8" fill="url(#bgGrad)"/>
+  <rect width="38" height="38" x="1" y="1" rx="7" fill="none" stroke="#3C3F41" stroke-width="1"/>
+  
+  <!-- Glowing Levitating Lightning Bolt -->
+  <g transform="translate(10, 8)" filter="url(#glow)">
+    <path d="M11.5 1L2 11h6v8l9.5-10h-6.5V1z" fill="url(#boltGrad)"/>
+  </g>
+</svg>

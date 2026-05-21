@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.matasar.antigravity-companion</id>
     <name>Antigravity Companion</name>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 
     <vendor email="matasar.ei@gmail.com" url="https://github.com/ematasar/antigravity-phpstorm">Yevhen Matasar</vendor>
 
@@ -35,6 +35,12 @@
     ]]></description>
 
     <change-notes><![CDATA[
+      <h3>1.0.1</h3>
+      <ul>
+        <li>Replaced the deprecated <code>TerminalToolWindowManager.createLocalShellWidget(...)</code> call with the non-deprecated <code>createNewSession(runner, TerminalTabState)</code> path — clears the "scheduled for removal" compatibility warning on newer IDEs.</li>
+        <li>Replaced the deprecated 4-arg <code>TextFieldWithBrowseButton.addBrowseFolderListener(...)</code> in the settings panel with the modern <code>TextBrowseFolderListener</code> form.</li>
+        <li><code>agy</code> now runs as the terminal tab's process directly instead of being typed into a shell; the tab closes cleanly when the user exits agy.</li>
+      </ul>
       <h3>1.0.0</h3>
       <ul>
         <li>Initial public release.</li>

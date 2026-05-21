@@ -117,10 +117,16 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         ApplicationManager.getApplication().invokeLater {
             try {
                 val tm = org.jetbrains.plugins.terminal.TerminalToolWindowManager.getInstance(project)
-                // 3-arg overload (workingDirectory, tabName, requestFocus) — the 2-arg
-                // overload is deprecated and scheduled for removal.
-                val widget = tm.createLocalShellWidget(project.basePath, "Antigravity", true)
-                widget.executeCommand(quoteForShell(agyPath))
+                // Non-deprecated path: configure a TerminalTabState with the working dir, tab
+                // name, and the agy command, then hand it to the default terminal runner. Agy
+                // becomes the tab's process directly — no intermediate shell to type into,
+                // so the tab closes cleanly when the user exits agy.
+                val tabState = org.jetbrains.plugins.terminal.TerminalTabState().apply {
+                    myTabName = "Antigravity"
+                    myWorkingDirectory = project.basePath
+                    myShellCommand = listOf(agyPath)
+                }
+                tm.createNewSession(tm.terminalRunner, tabState)
                 log.info("Spawned agy terminal session for project $projectHash (binary: $agyPath)")
             } catch (e: Exception) {
                 log.error("Failed to spawn agy terminal session", e)
@@ -158,8 +164,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         notification.notify(project)
     }
 
-    private fun quoteForShell(path: String): String =
-        if (AntigravitySettings.isWindows() || !path.contains(' ')) path else "\"$path\""
 
     // ---------------------------------------------------------------- MCP TCP server
 
@@ -709,7 +713,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     companion object {
-        const val PLUGIN_VERSION: String = "1.0.0"
+        const val PLUGIN_VERSION: String = "1.0.1"
 
         /**
          * Sent as the `instructions` field on the MCP `initialize` response. Clients SHOULD

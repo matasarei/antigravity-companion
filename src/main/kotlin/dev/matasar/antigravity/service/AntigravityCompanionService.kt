@@ -75,10 +75,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         runStep("start MCP server") { startMcpServer() }
         runStep("write MCP bridge script") { writeBridgeScript() }
         runStep("register in mcp_config.json") { registerInMcpConfig() }
-        // One-shot cleanup of an interim 1.1.0 build that wrote a project rule file under
-        // .antigravitycli/rules/. The directive turned out to be ignored by the agent and
-        // is no longer used; remove any leftover so the workspace stays clean.
-        runStep("clean up legacy project rule file") { deleteLegacyProjectRuleFile() }
     }
 
     private inline fun runStep(label: String, block: () -> Unit) {
@@ -765,23 +761,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             log.warn("Failed to unregister from mcp_config.json", e)
         }
         try { bridgeScript?.takeIf { it.exists() }?.delete() } catch (_: Exception) { /* ignore */ }
-    }
-
-    // ---------------------------------------------------------------- Legacy cleanup
-
-    /**
-     * Removes an old `<workspace>/.antigravitycli/rules/antigravity-companion.md` if present.
-     * An interim 1.1.0 build of the plugin wrote one to instruct `agy` to quote full paths in
-     * its replies, but the directive was effectively ignored — and Antigravity has since added
-     * a native pre-execution review flow that surfaces paths to the user. The file is no
-     * longer written by this plugin, so it just needs to be tidied up on first open.
-     */
-    private fun deleteLegacyProjectRuleFile() {
-        val basePath = project.basePath ?: return
-        val target = File(basePath, ".antigravitycli/rules/antigravity-companion.md")
-        if (target.exists() && target.delete()) {
-            log.info("Removed legacy project rule file at ${target.absolutePath}")
-        }
     }
 
     companion object {

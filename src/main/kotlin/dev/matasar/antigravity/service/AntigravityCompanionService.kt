@@ -118,13 +118,17 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             try {
                 val tm = org.jetbrains.plugins.terminal.TerminalToolWindowManager.getInstance(project)
                 // Non-deprecated path: configure a TerminalTabState with the working dir, tab
-                // name, and the agy command, then hand it to the default terminal runner. Agy
-                // becomes the tab's process directly — no intermediate shell to type into,
-                // so the tab closes cleanly when the user exits agy.
+                // name, and the agy command, then hand it to the default terminal runner. We
+                // wrap the agy invocation in a login + interactive shell so PATH and other
+                // environment configured in the user's .zprofile/.zshrc/.bash_profile is loaded
+                // BEFORE agy starts — without this, GUI-launched IDEs on macOS inherit only
+                // launchd's sparse PATH, so tools like docker-compose / brew-installed binaries
+                // are invisible to agy and its child commands. `exec` replaces the shell with
+                // agy so there's no zombie shell process in the tree.
                 val tabState = org.jetbrains.plugins.terminal.TerminalTabState().apply {
                     myTabName = "Antigravity"
                     myWorkingDirectory = project.basePath
-                    myShellCommand = listOf(agyPath)
+                    myShellCommand = buildAgyInvocation(agyPath)
                 }
                 tm.createNewSession(tm.terminalRunner, tabState)
                 log.info("Spawned agy terminal session for project $projectHash (binary: $agyPath)")
@@ -134,6 +138,53 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             }
         }
     }
+
+    private fun buildAgyInvocation(agyPath: String): List<String> {
+        if (AntigravitySettings.isWindows()) {
+            // Windows: PATH inheritance for GUI-launched apps is generally fine and there's no
+            // direct equivalent of a login shell. Spawn agy directly.
+            return listOf(agyPath)
+        }
+        val shell = resolveLoginShell()
+        val command = "exec ${shellEscape(agyPath)}"
+        // -l (login) loads .zprofile / .bash_profile (where Homebrew, asdf, nvm, etc. typically
+        //          add to PATH).
+        // -i (interactive) loads .zshrc / .bashrc (where some users keep PATH tweaks too).
+        // POSIX `sh` (e.g. dash on many Linux distros) doesn't reliably accept those flags, so
+        // we fall back to plain `-c` when the resolved shell isn't one of the known interactive
+        // shells. agy still starts; it just won't see the user's rc-file PATH.
+        return if (supportsLoginInteractiveFlags(shell)) {
+            listOf(shell, "-l", "-i", "-c", command)
+        } else {
+            listOf(shell, "-c", command)
+        }
+    }
+
+    /**
+     * Returns the shell to invoke `agy` under. Prefer `$SHELL` if it points at an executable,
+     * then common bash/zsh paths, then `/bin/sh` as a last resort. Falling back to `/bin/sh`
+     * (often dash on Linux) means we'll skip the `-l -i` flags it doesn't understand.
+     */
+    private fun resolveLoginShell(): String {
+        System.getenv("SHELL")
+            ?.takeIf { it.isNotBlank() && java.io.File(it).canExecute() }
+            ?.let { return it }
+        for (candidate in listOf("/bin/zsh", "/bin/bash", "/usr/bin/zsh", "/usr/bin/bash")) {
+            if (java.io.File(candidate).canExecute()) return candidate
+        }
+        return "/bin/sh"
+    }
+
+    private fun supportsLoginInteractiveFlags(shellPath: String): Boolean =
+        when (java.io.File(shellPath).name.lowercase()) {
+            "bash", "zsh", "fish" -> true
+            // sh, dash, ash, ksh, mksh, busybox sh, etc. either ignore or reject -l/-i.
+            else -> false
+        }
+
+    /** Single-quote a string for safe inclusion in a shell `-c` command. */
+    private fun shellEscape(s: String): String =
+        "'" + s.replace("'", "'\\''") + "'"
 
     private fun notifySpawnFailure(e: Throwable) {
         val group = NotificationGroupManager.getInstance()
@@ -713,7 +764,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     companion object {
-        const val PLUGIN_VERSION: String = "1.0.1"
+        const val PLUGIN_VERSION: String = "1.1.0"
 
         /**
          * Sent as the `instructions` field on the MCP `initialize` response. Clients SHOULD

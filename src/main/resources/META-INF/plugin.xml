@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.matasar.antigravity-companion</id>
     <name>Antigravity Companion</name>
-    <version>1.0.1</version>
+    <version>1.1.0</version>
 
     <vendor email="matasar.ei@gmail.com" url="https://github.com/ematasar/antigravity-phpstorm">Yevhen Matasar</vendor>
 
@@ -21,13 +21,22 @@
         Click the <em>Start Antigravity Session</em> toolbar button (top-right) to launch
         <code>agy</code> in an IDE-embedded terminal pre-wired to the running project.
       </p>
-      <h3>Exposed tools</h3>
+      <h3>Exposed MCP tools</h3>
       <ul>
         <li><code>ide_get_active_editor</code> — current file path, language, cursor, selection, content.</li>
         <li><code>ide_get_open_files</code> — every file currently open in an editor tab.</li>
         <li><code>ide_get_diagnostics</code> — inspections/errors/warnings for a file.</li>
         <li><code>ide_open_file</code> — open a file at an optional line/column.</li>
       </ul>
+      <h3>Artifacts tool window</h3>
+      <p>
+        A right-anchored tool window lists recent brain entries <code>agy</code> generates
+        — plans, summaries, walkthroughs from your conversations. Sorted by most-recently
+        modified so the active session's output is always at the top; the conversation ID
+        prefix on each row helps distinguish entries that share a filename. Auto-refreshes
+        every few seconds while the tab is open; double-click any entry to open it in the
+        editor.
+      </p>
       <p>
         Configure the path to your <code>agy</code> binary under
         <strong>Settings → Tools → Antigravity Companion</strong>.
@@ -35,6 +44,11 @@
     ]]></description>
 
     <change-notes><![CDATA[
+      <h3>1.1.0</h3>
+      <ul>
+        <li>New <b>Antigravity</b> tool window (right anchor) listing recent <code>agy</code> brain artifacts — plans, summaries, walkthroughs — across your conversations, sorted by most-recently modified so the active session sits on top. Double-click any entry to open it in the editor. Auto-refreshes every 3 seconds while the tab is visible (paused otherwise); toolbar Refresh button forces an immediate reload. Open Brain Folder action reveals the underlying directory in your OS file manager.</li>
+        <li><code>agy</code> is now launched inside the user's login + interactive shell (<code>$SHELL -lic</code>) so <code>.zprofile</code>/<code>.zshrc</code>/<code>.bash_profile</code> are loaded before agy starts. Fixes missing-PATH issues for tools like <code>docker-compose</code> / Homebrew binaries on GUI-launched JetBrains IDEs on macOS.</li>
+      </ul>
       <h3>1.0.1</h3>
       <ul>
         <li>Replaced the deprecated <code>TerminalToolWindowManager.createLocalShellWidget(...)</code> call with the non-deprecated <code>createNewSession(runner, TerminalTabState)</code> path — clears the "scheduled for removal" compatibility warning on newer IDEs.</li>
@@ -72,6 +86,12 @@
         <notificationGroup
             id="Antigravity Companion"
             displayType="BALLOON"/>
+
+        <toolWindow
+            id="Antigravity Artifacts"
+            anchor="right"
+            icon="/icons/antigravity_artifacts.svg"
+            factoryClass="dev.matasar.antigravity.ui.ArtifactsToolWindowFactory"/>
     </extensions>
 
     <actions>

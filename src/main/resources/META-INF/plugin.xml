@@ -21,13 +21,19 @@
         Click the <em>Start Antigravity Session</em> toolbar button (top-right) to launch
         <code>agy</code> in an IDE-embedded terminal pre-wired to the running project.
       </p>
-      <h3>Exposed tools</h3>
+      <h3>Exposed MCP tools</h3>
       <ul>
         <li><code>ide_get_active_editor</code> — current file path, language, cursor, selection, content.</li>
         <li><code>ide_get_open_files</code> — every file currently open in an editor tab.</li>
         <li><code>ide_get_diagnostics</code> — inspections/errors/warnings for a file.</li>
         <li><code>ide_open_file</code> — open a file at an optional line/column.</li>
       </ul>
+      <h3>Artifacts tool window</h3>
+      <p>
+        A right-anchored tool window lists the plans, summaries, and brain entries
+        <code>agy</code> generates for the current project. Auto-refreshes every few seconds;
+        double-click an entry to open it in the editor.
+      </p>
       <p>
         Configure the path to your <code>agy</code> binary under
         <strong>Settings → Tools → Antigravity Companion</strong>.
@@ -37,10 +43,8 @@
     <change-notes><![CDATA[
       <h3>1.1.0</h3>
       <ul>
-        <li>New MCP tool <code>ide_show_diff</code>: when <code>agy</code> proposes a file edit it now pops a native side-by-side IntelliJ diff dialog with <b>Reject</b> / <b>Accept</b> / <b>Accept All</b> buttons. The accepted file is written through the IDE's write action (so undo and VCS see it correctly).</li>
-        <li><b>Accept All</b> flips per-session auto-accept; subsequent <code>ide_show_diff</code> calls skip the dialog until <code>agy</code> is restarted.</li>
-        <li>Out-of-workspace edits are refused for safety.</li>
-        <li>Stronger MCP <code>instructions</code> directing the agent to route every file edit through <code>ide_show_diff</code> instead of its built-in write tools.</li>
+        <li>New <b>Antigravity</b> tool window (right anchor) listing <code>agy</code>'s brain artefacts — plans, summaries, walkthroughs — for the current project. Double-click any entry to open it in the editor. Auto-refreshes every 3 seconds; toolbar Refresh button forces an immediate reload. Open Brain Folder action reveals the underlying directory in your OS file manager.</li>
+        <li><code>agy</code> is now launched inside the user's login + interactive shell (<code>$SHELL -lic</code>) so <code>.zprofile</code>/<code>.zshrc</code>/<code>.bash_profile</code> are loaded before agy starts. Fixes missing-PATH issues for tools like <code>docker-compose</code> / Homebrew binaries on GUI-launched JetBrains IDEs on macOS.</li>
       </ul>
       <h3>1.0.1</h3>
       <ul>
@@ -79,6 +83,12 @@
         <notificationGroup
             id="Antigravity Companion"
             displayType="BALLOON"/>
+
+        <toolWindow
+            id="Antigravity Artifacts"
+            anchor="right"
+            icon="/icons/antigravity_artifacts.svg"
+            factoryClass="dev.matasar.antigravity.ui.ArtifactsToolWindowFactory"/>
     </extensions>
 
     <actions>

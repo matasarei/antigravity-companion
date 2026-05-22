@@ -10,22 +10,17 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.impl.DocumentMarkupModel
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
-import com.intellij.openapi.fileTypes.FileType
-import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.openapi.vfs.VirtualFile
 import dev.matasar.antigravity.bridge.StdioBridge
-import dev.matasar.antigravity.diff.DiffApprovalDialog
 import dev.matasar.antigravity.settings.AntigravitySettings
 import dev.matasar.antigravity.settings.AntigravitySettingsConfigurable
 import kotlinx.coroutines.CoroutineScope
@@ -80,6 +75,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         runStep("start MCP server") { startMcpServer() }
         runStep("write MCP bridge script") { writeBridgeScript() }
         runStep("register in mcp_config.json") { registerInMcpConfig() }
+        // One-shot cleanup of an interim 1.1.0 build that wrote a project rule file under
+        // .antigravitycli/rules/. The directive turned out to be ignored by the agent and
+        // is no longer used; remove any leftover so the workspace stays clean.
+        runStep("clean up legacy project rule file") { deleteLegacyProjectRuleFile() }
     }
 
     private inline fun runStep(label: String, block: () -> Unit) {
@@ -123,13 +122,17 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             try {
                 val tm = org.jetbrains.plugins.terminal.TerminalToolWindowManager.getInstance(project)
                 // Non-deprecated path: configure a TerminalTabState with the working dir, tab
-                // name, and the agy command, then hand it to the default terminal runner. Agy
-                // becomes the tab's process directly — no intermediate shell to type into,
-                // so the tab closes cleanly when the user exits agy.
+                // name, and the agy command, then hand it to the default terminal runner. We
+                // wrap the agy invocation in a login + interactive shell so PATH and other
+                // environment configured in the user's .zprofile/.zshrc/.bash_profile is loaded
+                // BEFORE agy starts — without this, GUI-launched IDEs on macOS inherit only
+                // launchd's sparse PATH, so tools like docker-compose / brew-installed binaries
+                // are invisible to agy and its child commands. `exec` replaces the shell with
+                // agy so there's no zombie shell process in the tree.
                 val tabState = org.jetbrains.plugins.terminal.TerminalTabState().apply {
                     myTabName = "Antigravity"
                     myWorkingDirectory = project.basePath
-                    myShellCommand = listOf(agyPath)
+                    myShellCommand = buildAgyInvocation(agyPath)
                 }
                 tm.createNewSession(tm.terminalRunner, tabState)
                 log.info("Spawned agy terminal session for project $projectHash (binary: $agyPath)")
@@ -139,6 +142,24 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             }
         }
     }
+
+    private fun buildAgyInvocation(agyPath: String): List<String> {
+        if (AntigravitySettings.isWindows()) {
+            // Windows: PATH inheritance for GUI-launched apps is generally fine and there's no
+            // direct equivalent of a login shell. Spawn agy directly.
+            return listOf(agyPath)
+        }
+        val userShell = System.getenv("SHELL")?.takeIf { it.isNotBlank() } ?: "/bin/sh"
+        // -l (login) loads .zprofile / .bash_profile (where Homebrew, asdf, nvm, etc. typically
+        //          add to PATH).
+        // -i (interactive) loads .zshrc / .bashrc (where some users keep PATH tweaks too).
+        // -c "exec …" runs the command and replaces the shell process with agy.
+        return listOf(userShell, "-l", "-i", "-c", "exec ${shellEscape(agyPath)}")
+    }
+
+    /** Single-quote a string for safe inclusion in a shell `-c` command. */
+    private fun shellEscape(s: String): String =
+        "'" + s.replace("'", "'\\''") + "'"
 
     private fun notifySpawnFailure(e: Throwable) {
         val group = NotificationGroupManager.getInstance()
@@ -195,20 +216,9 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         }
     }
 
-    /**
-     * Per-MCP-connection mutable state. "Accept All" lives here so it resets when `agy`
-     * disconnects — a fresh agy session starts in PROMPT mode again.
-     */
-    private class ConnectionContext {
-        @Volatile var approvalMode: ApprovalMode = ApprovalMode.PROMPT
-    }
-
-    private enum class ApprovalMode { PROMPT, ACCEPT_ALL }
-
     private fun handleClient(socket: Socket) {
         log.info("MCP client connected from ${socket.remoteSocketAddress}")
         socket.tcpNoDelay = true
-        val ctx = ConnectionContext()
         try {
             socket.use { s ->
                 val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
@@ -235,9 +245,9 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                         continue
                     }
                     when (parsed) {
-                        is JsonObject -> handleRequest(parsed, ctx, send)
+                        is JsonObject -> handleRequest(parsed, send)
                         is JsonArray -> parsed.forEach {
-                            if (it is JsonObject) handleRequest(it, ctx, send)
+                            if (it is JsonObject) handleRequest(it, send)
                         }
                         else -> log.warn("Unexpected JSON-RPC payload: $parsed")
                     }
@@ -248,7 +258,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         }
     }
 
-    private fun handleRequest(req: JsonObject, ctx: ConnectionContext, send: (String) -> Unit) {
+    private fun handleRequest(req: JsonObject, send: (String) -> Unit) {
         val method = req["method"]?.jsonPrimitive?.contentOrNull
         val id = req["id"]
         val params = (req["params"] as? JsonObject) ?: JsonObject(emptyMap())
@@ -304,7 +314,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 "tools/call" -> {
                     val name = params["name"]?.jsonPrimitive?.contentOrNull ?: ""
                     val args = (params["arguments"] as? JsonObject) ?: JsonObject(emptyMap())
-                    ok(invokeTool(name, args, ctx))
+                    ok(invokeTool(name, args))
                 }
 
                 "prompts/list" -> ok(buildJsonObject {
@@ -400,57 +410,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             },
         ),
         buildTool(
-            name = "ide_show_diff",
-            description = """
-                Proposes a change to a file and shows the user a native IntelliJ side-by-side diff
-                dialog with three buttons: Reject, Accept, Accept All. **This tool blocks until the
-                user clicks.** Use it for EVERY file modification or creation you want to make.
-
-                Arguments:
-                  - `file_path` (required): absolute path of the file to change. Must be inside the
-                    user's project workspace; out-of-workspace edits are refused.
-                  - `proposed_content` (required): the FULL final content of the file you want after
-                    the edit (not a patch / diff / partial snippet).
-                  - `summary` (optional): one short sentence describing the change, shown above the
-                    diff. Helps the user decide quickly.
-
-                Behaviour:
-                  - If the user clicks **Accept** or **Accept All**, this tool writes the file for
-                    you (through the IDE's write action, so undo + VCS see it correctly) and returns
-                    `{"accepted": true, "applied": true, ...}`. DO NOT then also call
-                    `replace_file_content`, `write_file`, or any other write tool on the same file —
-                    the change is already on disk.
-                  - If the user clicks **Reject**, the file is NOT written and the tool returns
-                    `{"accepted": false, "applied": false, ...}`. Abandon the edit and tell the user.
-                  - If the user clicked **Accept All** in this conversation already, this tool
-                    silently writes the file without showing a dialog and returns
-                    `{"accepted": true, "applied": true, "auto_accepted": true, ...}`. This is
-                    normal — keep using `ide_show_diff` for every edit; the user can still review
-                    the result in their editor.
-
-                Use this INSTEAD OF the built-in `replace_file_content` / `write_file` / file edit
-                tools when working in this IDE. The user explicitly wants the review flow.
-            """.trimIndent(),
-            inputSchema = buildJsonObject {
-                put("type", "object")
-                put("required", JsonArray(listOf(JsonPrimitive("file_path"), JsonPrimitive("proposed_content"))))
-                put("properties", buildJsonObject {
-                    put("file_path", buildJsonObject {
-                        put("type", "string")
-                        put("description", "Absolute path of the file (must be inside the project workspace).")
-                    })
-                    put("proposed_content", buildJsonObject {
-                        put("type", "string")
-                        put("description", "Full final file content you want after the edit (not a diff/patch).")
-                    })
-                    put("summary", buildJsonObject {
-                        put("type", "string")
-                        put("description", "Optional one-sentence description shown above the diff.")
-                    })
-                })
-            },
-        ),
-        buildTool(
             name = "ide_open_file",
             description = """
                 Opens a file in the user's JetBrains IDE, optionally scrolling to a 1-based line and
@@ -497,7 +456,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         put("inputSchema", inputSchema)
     }
 
-    private fun invokeTool(name: String, args: JsonObject, ctx: ConnectionContext): JsonObject {
+    private fun invokeTool(name: String, args: JsonObject): JsonObject {
         return try {
             val text = when (name) {
                 "ide_get_active_editor" -> readActiveEditor()
@@ -507,14 +466,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                     val path = args["file_path"]?.jsonPrimitive?.contentOrNull
                         ?: return toolError("file_path is required")
                     openFile(path, args["line"]?.jsonPrimitive?.intOrNull, args["column"]?.jsonPrimitive?.intOrNull)
-                }
-                "ide_show_diff" -> {
-                    val path = args["file_path"]?.jsonPrimitive?.contentOrNull
-                        ?: return toolError("file_path is required")
-                    val proposed = args["proposed_content"]?.jsonPrimitive?.contentOrNull
-                        ?: return toolError("proposed_content is required")
-                    val summary = args["summary"]?.jsonPrimitive?.contentOrNull
-                    return showDiff(path, proposed, summary, ctx)
                 }
                 else -> return toolError("Unknown tool: $name")
             }
@@ -632,146 +583,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             result = "Opened $path${line?.let { " (line $it)" }.orEmpty()}"
         }
         return result
-    }
-
-    // ---------------------------------------------------------------- ide_show_diff
-
-    private fun showDiff(
-        filePath: String,
-        proposedContent: String,
-        summary: String?,
-        ctx: ConnectionContext,
-    ): JsonObject {
-        // 1. Path must be inside the project. Refuse out-of-workspace edits.
-        val basePath = project.basePath
-            ?: return diffResult(accepted = false, applied = false, message = "Project has no basePath; cannot edit files.")
-        val normalizedTarget = File(filePath).canonicalFile
-        val baseDir = File(basePath).canonicalFile
-        if (!normalizedTarget.toPath().startsWith(baseDir.toPath())) {
-            return diffResult(
-                accepted = false,
-                applied = false,
-                message = "Refusing to edit '$filePath': path is outside the project workspace ($basePath).",
-            )
-        }
-        val absolutePath = normalizedTarget.absolutePath
-
-        // 2. Snapshot current content from VFS (handles files open in editor with unsaved
-        //    changes correctly) or from disk; empty string if the file is new.
-        val original = readCurrentContent(absolutePath)
-
-        // 3. If the user already pressed "Accept All" this session, skip the dialog and apply.
-        if (ctx.approvalMode == ApprovalMode.ACCEPT_ALL) {
-            val writeError = writeFileViaVfs(absolutePath, proposedContent)
-            return if (writeError == null) {
-                diffResult(accepted = true, applied = true, autoAccepted = true, message = "Auto-applied (Accept All).")
-            } else {
-                diffResult(accepted = true, applied = false, message = "Auto-accepted but write failed: $writeError")
-            }
-        }
-
-        // 4. Otherwise: show the modal dialog on the EDT and block until the user chooses.
-        var outcome = DiffApprovalDialog.Outcome.REJECT
-        ApplicationManager.getApplication().invokeAndWait {
-            val fileType: FileType = FileTypeManager.getInstance().getFileTypeByFileName(File(absolutePath).name)
-            val dialog = DiffApprovalDialog(
-                project = project,
-                filePath = absolutePath,
-                originalContent = original,
-                proposedContent = proposedContent,
-                summary = summary,
-                fileType = fileType,
-            )
-            dialog.show()
-            outcome = dialog.outcome
-        }
-
-        return when (outcome) {
-            DiffApprovalDialog.Outcome.REJECT ->
-                diffResult(accepted = false, applied = false, message = "User rejected the change.")
-            DiffApprovalDialog.Outcome.ACCEPT -> {
-                val writeError = writeFileViaVfs(absolutePath, proposedContent)
-                if (writeError == null) diffResult(accepted = true, applied = true, message = "Accepted and written.")
-                else diffResult(accepted = true, applied = false, message = "Accepted but write failed: $writeError")
-            }
-            DiffApprovalDialog.Outcome.ACCEPT_ALL -> {
-                ctx.approvalMode = ApprovalMode.ACCEPT_ALL
-                val writeError = writeFileViaVfs(absolutePath, proposedContent)
-                if (writeError == null) diffResult(
-                    accepted = true,
-                    applied = true,
-                    modeChanged = true,
-                    message = "Accepted. Auto-accept enabled for the rest of this session.",
-                )
-                else diffResult(accepted = true, applied = false, modeChanged = true, message = "Accept All enabled but write failed: $writeError")
-            }
-        }
-    }
-
-    private fun readCurrentContent(absolutePath: String): String {
-        // Prefer VFS so we read what the IDE sees (including unsaved buffer changes if open).
-        val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(absolutePath)
-        if (vf == null || !vf.exists()) return ""
-        val doc = FileDocumentManager.getInstance().getDocument(vf)
-        return doc?.text ?: String(vf.contentsToByteArray(), vf.charset)
-    }
-
-    private fun writeFileViaVfs(absolutePath: String, content: String): String? {
-        // Returns null on success, error message string on failure.
-        val target = File(absolutePath)
-        val parentPath = target.parentFile
-            ?: return "Path has no parent: $absolutePath"
-        val error = arrayOf<String?>(null)
-        ApplicationManager.getApplication().invokeAndWait {
-            try {
-                WriteAction.run<Throwable> {
-                    val parentVf = ensureParentVf(parentPath)
-                    if (parentVf == null) {
-                        error[0] = "Cannot resolve parent in VFS: ${parentPath.absolutePath}"
-                    } else {
-                        val existing = parentVf.findChild(target.name)
-                        val vf = existing ?: parentVf.createChildData(this, target.name)
-                        val charset = (existing?.charset) ?: Charsets.UTF_8
-                        vf.setBinaryContent(content.toByteArray(charset))
-                    }
-                }
-            } catch (t: Throwable) {
-                error[0] = "${t.javaClass.simpleName}: ${t.message}"
-            }
-        }
-        return error[0]
-    }
-
-    private fun ensureParentVf(parentPath: File): VirtualFile? {
-        if (!parentPath.exists() && !parentPath.mkdirs()) return null
-        return LocalFileSystem.getInstance().refreshAndFindFileByPath(parentPath.absolutePath)
-    }
-
-    private fun diffResult(
-        accepted: Boolean,
-        applied: Boolean,
-        autoAccepted: Boolean = false,
-        modeChanged: Boolean = false,
-        message: String,
-    ): JsonObject {
-        // We return a structured JSON in the tool output's "text" field. The model will read
-        // the JSON to decide what to do next. We also set isError=false so accepted/rejected
-        // are both treated as normal returns.
-        val payload = buildJsonObject {
-            put("accepted", accepted)
-            put("applied", applied)
-            if (autoAccepted) put("auto_accepted", true)
-            if (modeChanged) put("approval_mode", "accept_all")
-            put("message", message)
-        }
-        return buildJsonObject {
-            put("content", buildJsonArray {
-                add(buildJsonObject {
-                    put("type", "text")
-                    put("text", payload.toString())
-                })
-            })
-        }
     }
 
     // ---------------------------------------------------------------- Bridge script
@@ -927,6 +738,23 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         try { bridgeScript?.takeIf { it.exists() }?.delete() } catch (_: Exception) { /* ignore */ }
     }
 
+    // ---------------------------------------------------------------- Legacy cleanup
+
+    /**
+     * Removes an old `<workspace>/.antigravitycli/rules/antigravity-companion.md` if present.
+     * An interim 1.1.0 build of the plugin wrote one to instruct `agy` to quote full paths in
+     * its replies, but the directive was effectively ignored — and Antigravity has since added
+     * a native pre-execution review flow that surfaces paths to the user. The file is no
+     * longer written by this plugin, so it just needs to be tidied up on first open.
+     */
+    private fun deleteLegacyProjectRuleFile() {
+        val basePath = project.basePath ?: return
+        val target = File(basePath, ".antigravitycli/rules/antigravity-companion.md")
+        if (target.exists() && target.delete()) {
+            log.info("Removed legacy project rule file at ${target.absolutePath}")
+        }
+    }
+
     companion object {
         const val PLUGIN_VERSION: String = "1.1.0"
 
@@ -970,26 +798,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
             6. If multiple files are relevant, call `ide_get_open_files` first to see what the
                user currently has in their tabs — that set is usually the right starting context.
-
-            7. **FILE EDITS GO THROUGH `ide_show_diff`.** Whenever you would otherwise call
-               `replace_file_content`, `write_file`, `create_file`, or any other tool that mutates
-               a file's contents, call `ide_show_diff(file_path, proposed_content, summary?)`
-               INSTEAD. The user has explicitly asked for review-before-write.
-
-               - Pass the FULL final file content in `proposed_content` (not a patch / diff /
-                 partial snippet).
-               - The tool returns `{"accepted": bool, "applied": bool, ...}`.
-               - If `applied: true`, the file is already on disk — do NOT call any other write
-                 tool on the same file in the same turn; you'd overwrite the user's accepted
-                 content.
-               - If `accepted: false`, the user rejected — abandon the edit. Don't retry under a
-                 different tool name.
-               - The user can click "Accept All" once; subsequent `ide_show_diff` calls will
-                 silently auto-apply (`auto_accepted: true` in the response). That's normal —
-                 keep using `ide_show_diff` for every edit.
-
-            8. Creating a new file is the same flow: call `ide_show_diff` with the new path and
-               the full intended file content. The dialog will indicate the file is new.
         """.trimIndent()
     }
 }

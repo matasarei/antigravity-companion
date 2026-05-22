@@ -18,7 +18,7 @@
   <rect width="38" height="38" x="1" y="1" rx="7" fill="none" stroke="#3C3F41" stroke-width="1"/>
   
   <!-- Glowing Levitating Lightning Bolt -->
-  <g transform="translate(10, 8)" filter="url(#glow)">
-    <path d="M11.5 1L2 11h6v8l9.5-10h-6.5V1z" fill="url(#boltGrad)"/>
+  <g transform="translate(2.4, 2.4) scale(2.2)" filter="url(#glow)">
+    <path d="M9 1L2 9h5v6l7-8H9V1z" fill="url(#boltGrad)"/>
   </g>
 </svg>

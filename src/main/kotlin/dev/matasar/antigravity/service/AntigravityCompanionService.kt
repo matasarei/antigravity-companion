@@ -149,13 +149,42 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             // direct equivalent of a login shell. Spawn agy directly.
             return listOf(agyPath)
         }
-        val userShell = System.getenv("SHELL")?.takeIf { it.isNotBlank() } ?: "/bin/sh"
+        val shell = resolveLoginShell()
+        val command = "exec ${shellEscape(agyPath)}"
         // -l (login) loads .zprofile / .bash_profile (where Homebrew, asdf, nvm, etc. typically
         //          add to PATH).
         // -i (interactive) loads .zshrc / .bashrc (where some users keep PATH tweaks too).
-        // -c "exec …" runs the command and replaces the shell process with agy.
-        return listOf(userShell, "-l", "-i", "-c", "exec ${shellEscape(agyPath)}")
+        // POSIX `sh` (e.g. dash on many Linux distros) doesn't reliably accept those flags, so
+        // we fall back to plain `-c` when the resolved shell isn't one of the known interactive
+        // shells. agy still starts; it just won't see the user's rc-file PATH.
+        return if (supportsLoginInteractiveFlags(shell)) {
+            listOf(shell, "-l", "-i", "-c", command)
+        } else {
+            listOf(shell, "-c", command)
+        }
     }
+
+    /**
+     * Returns the shell to invoke `agy` under. Prefer `$SHELL` if it points at an executable,
+     * then common bash/zsh paths, then `/bin/sh` as a last resort. Falling back to `/bin/sh`
+     * (often dash on Linux) means we'll skip the `-l -i` flags it doesn't understand.
+     */
+    private fun resolveLoginShell(): String {
+        System.getenv("SHELL")
+            ?.takeIf { it.isNotBlank() && java.io.File(it).canExecute() }
+            ?.let { return it }
+        for (candidate in listOf("/bin/zsh", "/bin/bash", "/usr/bin/zsh", "/usr/bin/bash")) {
+            if (java.io.File(candidate).canExecute()) return candidate
+        }
+        return "/bin/sh"
+    }
+
+    private fun supportsLoginInteractiveFlags(shellPath: String): Boolean =
+        when (java.io.File(shellPath).name.lowercase()) {
+            "bash", "zsh", "fish" -> true
+            // sh, dash, ash, ksh, mksh, busybox sh, etc. either ignore or reject -l/-i.
+            else -> false
+        }
 
     /** Single-quote a string for safe inclusion in a shell `-c` command. */
     private fun shellEscape(s: String): String =

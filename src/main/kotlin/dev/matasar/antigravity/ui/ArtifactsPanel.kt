@@ -4,7 +4,6 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
-import com.intellij.openapi.actionSystem.ActionToolbar
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
@@ -102,7 +101,7 @@ class ArtifactsPanel(private val project: Project) : SimpleToolWindowPanel(true,
         if (disposed) return
         ApplicationManager.getApplication().executeOnPooledThread {
             val items = try {
-                ArtifactsRepository.listArtifacts(project)
+                ArtifactsRepository.listArtifacts()
             } catch (t: Throwable) {
                 log.warn("Failed to list agy artifacts", t)
                 emptyList()
@@ -220,7 +219,7 @@ object ArtifactsRepository {
         return dir.takeIf { it.isDirectory }
     }
 
-    fun listArtifacts(@Suppress("UNUSED_PARAMETER") project: Project): List<ArtifactItem> {
+    fun listArtifacts(): List<ArtifactItem> {
         // We do NOT filter by project. The agy CLI's brain dirs live at
         // `~/.gemini/antigravity-cli/brain/<conversation-uuid>/`, and the conversation↔project
         // mapping is stored inside protobuf .pb files we can't cheaply parse. Instead we list

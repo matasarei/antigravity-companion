@@ -37,10 +37,16 @@ import javax.swing.SwingUtilities
 import javax.swing.ToolTipManager
 
 /**
- * Right-anchored tool window content showing the agy "artifacts" (brain entries — plans,
- * summaries, notes) generated for the current project. Polls the filesystem every 3 seconds
- * while the tool window is visible (paused while hidden) and exposes a manual Refresh button.
- * Double-click or Enter opens an artifact in the editor.
+ * Right-anchored tool window content listing agy "artifacts" — brain entries (plans,
+ * summaries, walkthroughs) from recent agy conversations on this machine. Files come from
+ * `~/.gemini/antigravity-cli/brain/<conversation-uuid>/`; we sort by mtime so the active
+ * session's output sits at the top regardless of which project a given conversation belongs
+ * to. (Mapping brain dirs to projects would require parsing the protobuf conversation files,
+ * which isn't worth the cost; relying on mtime is good enough in practice.)
+ *
+ * Polls the filesystem every 3 seconds while the tool window is visible (paused while
+ * hidden) and exposes a manual Refresh button. Double-click or Enter opens an artifact in
+ * the editor.
  */
 class ArtifactsPanel(
     private val project: Project,
@@ -80,7 +86,7 @@ class ArtifactsPanel(
         }
         val openFolderAction = object : AnAction(
             "Open Brain Folder",
-            "Reveal the agy brain folder for this project in the system file manager",
+            "Reveal the agy brain folder in the system file manager",
             AllIcons.Nodes.Folder,
         ) {
             override fun actionPerformed(e: AnActionEvent) {
@@ -113,10 +119,15 @@ class ArtifactsPanel(
             }
         })
 
-        // The panel is being created in response to the tool window opening, so it's visible
-        // right now — load once and start polling.
-        reloadAsync()
-        startPolling()
+        // Don't assume the panel was created in response to the tool window opening: the
+        // platform may instantiate content while the window is still hidden (e.g. during
+        // project-open layout restoration). Only do the initial reload / start polling if
+        // we're actually visible right now — the listener below will fire and bootstrap
+        // both the moment the user opens the tab.
+        if (toolWindow.isVisible) {
+            reloadAsync()
+            startPolling()
+        }
 
         // Pause/resume polling based on the tool window's visibility so we don't scan the
         // filesystem every 3 seconds while the panel is closed.

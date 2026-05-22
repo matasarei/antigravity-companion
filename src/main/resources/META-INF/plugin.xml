@@ -43,7 +43,7 @@
     <change-notes><![CDATA[
       <h3>1.1.0</h3>
       <ul>
-        <li>New <b>Antigravity</b> tool window (right anchor) listing <code>agy</code>'s brain artefacts — plans, summaries, walkthroughs — for the current project. Double-click any entry to open it in the editor. Auto-refreshes every 3 seconds; toolbar Refresh button forces an immediate reload. Open Brain Folder action reveals the underlying directory in your OS file manager.</li>
+        <li>New <b>Antigravity</b> tool window (right anchor) listing <code>agy</code>'s brain artifacts — plans, summaries, walkthroughs — for the current project. Double-click any entry to open it in the editor. Auto-refreshes every 3 seconds; toolbar Refresh button forces an immediate reload. Open Brain Folder action reveals the underlying directory in your OS file manager.</li>
         <li><code>agy</code> is now launched inside the user's login + interactive shell (<code>$SHELL -lic</code>) so <code>.zprofile</code>/<code>.zshrc</code>/<code>.bash_profile</code> are loaded before agy starts. Fixes missing-PATH issues for tools like <code>docker-compose</code> / Homebrew binaries on GUI-launched JetBrains IDEs on macOS.</li>
       </ul>
       <h3>1.0.1</h3>

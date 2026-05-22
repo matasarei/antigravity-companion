@@ -12,7 +12,7 @@ import com.intellij.ui.content.ContentFactory
 class ArtifactsToolWindowFactory : ToolWindowFactory, DumbAware {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = ArtifactsPanel(project)
+        val panel = ArtifactsPanel(project, toolWindow)
         val content = ContentFactory.getInstance().createContent(panel, "", false)
         content.setDisposer(panel)
         toolWindow.contentManager.addContent(content)

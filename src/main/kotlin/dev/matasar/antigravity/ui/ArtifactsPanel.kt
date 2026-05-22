@@ -13,6 +13,9 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.wm.ToolWindow
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBList
@@ -31,22 +34,40 @@ import javax.swing.DefaultListModel
 import javax.swing.JList
 import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
+import javax.swing.ToolTipManager
 
 /**
  * Right-anchored tool window content showing the agy "artifacts" (brain entries — plans,
- * summaries, notes) generated for the current project. Auto-refreshes every 3 seconds and
- * exposes a manual Refresh button. Double-click or Enter opens an artifact in the editor.
+ * summaries, notes) generated for the current project. Polls the filesystem every 3 seconds
+ * while the tool window is visible (paused while hidden) and exposes a manual Refresh button.
+ * Double-click or Enter opens an artifact in the editor.
  */
-class ArtifactsPanel(private val project: Project) : SimpleToolWindowPanel(true, true), Disposable {
+class ArtifactsPanel(
+    private val project: Project,
+    private val toolWindow: ToolWindow,
+) : SimpleToolWindowPanel(true, true), Disposable {
 
     private val log = Logger.getInstance(ArtifactsPanel::class.java)
     @Volatile private var disposed = false
+    @Volatile private var pollScheduled = false
     private val listModel = DefaultListModel<ArtifactItem>()
-    private val list = JBList(listModel).apply {
+    private val list: JBList<ArtifactItem> = object : JBList<ArtifactItem>(listModel) {
+        // Per-row tooltips on a JList must come from this override — tooltips set on the cell
+        // renderer don't propagate because the renderer's component isn't a real Swing child.
+        override fun getToolTipText(event: MouseEvent): String? {
+            val index = locationToIndex(event.point)
+            if (index < 0) return null
+            val bounds = getCellBounds(index, index) ?: return null
+            if (!bounds.contains(event.point)) return null
+            val item = listModel.getElementAt(index) ?: return null
+            return item.summary ?: "Conversation ${item.conversationId}"
+        }
+    }.apply {
         cellRenderer = ArtifactCellRenderer()
         selectionMode = ListSelectionModel.SINGLE_SELECTION
         emptyText.text = "No agy artifacts yet."
         emptyText.appendLine("Start an agy session in this project to generate plans, summaries, and notes.")
+        ToolTipManager.sharedInstance().registerComponent(this)
     }
     private val poller = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
 
@@ -54,7 +75,7 @@ class ArtifactsPanel(private val project: Project) : SimpleToolWindowPanel(true,
         // Toolbar: Refresh + Open Brain Folder
         val refreshAction = object : AnAction("Refresh", "Reload the artifact list now", AllIcons.Actions.Refresh) {
             override fun actionPerformed(e: AnActionEvent) {
-                reload()
+                reloadAsync()
             }
         }
         val openFolderAction = object : AnAction(
@@ -92,24 +113,48 @@ class ArtifactsPanel(private val project: Project) : SimpleToolWindowPanel(true,
             }
         })
 
-        // Initial load + start polling
-        reload()
-        schedulePoll()
+        // The panel is being created in response to the tool window opening, so it's visible
+        // right now — load once and start polling.
+        reloadAsync()
+        startPolling()
+
+        // Pause/resume polling based on the tool window's visibility so we don't scan the
+        // filesystem every 3 seconds while the panel is closed.
+        project.messageBus.connect(this).subscribe(
+            ToolWindowManagerListener.TOPIC,
+            object : ToolWindowManagerListener {
+                override fun stateChanged(twm: ToolWindowManager) {
+                    if (disposed) return
+                    if (toolWindow.isVisible) {
+                        // Catch up on anything that changed while we were hidden, then poll.
+                        reloadAsync()
+                        startPolling()
+                    } else {
+                        stopPolling()
+                    }
+                }
+            },
+        )
     }
 
-    private fun reload() {
+    /** Use from the EDT (toolbar action / listener). Dispatches the listing to a pooled thread. */
+    private fun reloadAsync() {
         if (disposed) return
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val items = try {
-                ArtifactsRepository.listArtifacts()
-            } catch (t: Throwable) {
-                log.warn("Failed to list agy artifacts", t)
-                emptyList()
-            }
-            ApplicationManager.getApplication().invokeLater {
-                if (disposed) return@invokeLater
-                applyItems(items)
-            }
+        ApplicationManager.getApplication().executeOnPooledThread { reloadInline() }
+    }
+
+    /** Use when already on a worker thread (e.g. inside the poller's tick). */
+    private fun reloadInline() {
+        if (disposed) return
+        val items = try {
+            ArtifactsRepository.listArtifacts()
+        } catch (t: Throwable) {
+            log.warn("Failed to list agy artifacts", t)
+            emptyList()
+        }
+        ApplicationManager.getApplication().invokeLater {
+            if (disposed) return@invokeLater
+            applyItems(items)
         }
     }
 
@@ -124,23 +169,37 @@ class ArtifactsPanel(private val project: Project) : SimpleToolWindowPanel(true,
         }
     }
 
-    private fun schedulePoll() {
-        if (disposed) return
+    private fun startPolling() {
+        if (disposed || pollScheduled) return
+        pollScheduled = true
+        schedulePollTick()
+    }
+
+    private fun stopPolling() {
+        pollScheduled = false
+        poller.cancelAllRequests()
+    }
+
+    private fun schedulePollTick() {
+        if (disposed || !pollScheduled) return
         poller.addRequest({
+            // Already on a pooled thread — do the listing inline instead of dispatching again.
             try {
-                reload()
+                reloadInline()
             } finally {
-                schedulePoll()
+                schedulePollTick()
             }
         }, POLL_INTERVAL_MS)
     }
 
     private fun openSelected() {
         val item = list.selectedValue ?: return
-        val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(item.path)
+        // refreshAndFindFileByIoFile normalises path separators (matters on Windows where
+        // File.absolutePath uses backslashes, while VFS path APIs expect forward slashes).
+        val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(item.path))
         if (vf == null) {
             log.info("Selected artifact no longer exists on disk: ${item.path}")
-            reload()
+            reloadAsync()
             return
         }
         FileEditorManager.getInstance(project).openFile(vf, true)
@@ -153,7 +212,8 @@ class ArtifactsPanel(private val project: Project) : SimpleToolWindowPanel(true,
 
     override fun dispose() {
         disposed = true
-        // Alarm registered with `this` as parent is auto-disposed via Disposer.
+        pollScheduled = false
+        // The Alarm registered with `this` as parent is auto-disposed by the platform.
     }
 
     companion object {
@@ -185,8 +245,7 @@ private class ArtifactCellRenderer : ColoredListCellRenderer<ArtifactItem>() {
         // the same artifact filename (e.g. "implementation_plan.md"), so the user needs to see
         // which conversation it belongs to.
         append("   " + value.conversationId.take(8), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
-        val tip = value.summary ?: "Conversation ${value.conversationId}"
-        toolTipText = tip
+        // Per-row tooltips are handled by JList.getToolTipText in ArtifactsPanel.
     }
 
     private fun iconFor(name: String): javax.swing.Icon = when {

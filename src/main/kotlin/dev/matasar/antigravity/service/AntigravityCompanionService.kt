@@ -134,14 +134,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         if (bridgeScript == null) {
             val detail = initFailureReason
                 ?: "Setup did not complete when this project opened."
-            NotificationGroupManager.getInstance()
-                .getNotificationGroup("Antigravity Companion")
-                .createNotification(
-                    "Antigravity Companion failed to initialise",
-                    "$detail See idea.log and reopen the project to retry.",
-                    NotificationType.ERROR,
-                )
-                .notify(project)
+            notify(
+                title = "Antigravity Companion failed to initialise",
+                body = "$detail See idea.log and reopen the project to retry.",
+                type = NotificationType.ERROR,
+            )
             return
         }
 
@@ -224,89 +221,81 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     private fun shellEscape(s: String): String =
         "'" + s.replace("'", "'\\''") + "'"
 
-    private fun notifySpawnFailure(e: Throwable) {
-        val group = NotificationGroupManager.getInstance()
+    /**
+     * Shared notification factory — every user-facing balloon goes through here so the
+     * "Antigravity Companion" notification group, project routing, and basic structure stay
+     * consistent. Caller-provided [configure] runs on the [Notification] before it's posted
+     * (e.g. to attach actions).
+     */
+    private fun notify(
+        title: String,
+        body: String,
+        type: NotificationType,
+        configure: (Notification.() -> Unit)? = null,
+    ) {
+        val notification = NotificationGroupManager.getInstance()
             .getNotificationGroup("Antigravity Companion")
-        group.createNotification(
-            "Could not open Antigravity terminal",
-            "${e.javaClass.simpleName}: ${e.message ?: "(no message)"} — see idea.log for the stack trace.",
-            NotificationType.ERROR,
-        ).notify(project)
+            .createNotification(title, body, type)
+        configure?.invoke(notification)
+        notification.notify(project)
     }
 
-    private fun notifyMcpConfigLockUnavailable() {
-        val path = mcpConfigLockFile().absolutePath
-        val group = NotificationGroupManager.getInstance()
-            .getNotificationGroup("Antigravity Companion")
-        group.createNotification(
-            "Antigravity Companion could not register MCP server",
-            """
-                Could not acquire a file lock on $path — locking may be unsupported on this
-                filesystem (some network mounts, FUSE adapters), or the lock file is unreadable
-                due to permissions.
-                See idea.log for details.
-            """.trimIndent(),
-            NotificationType.WARNING,
-        ).notify(project)
-    }
+    private fun notifySpawnFailure(e: Throwable) = notify(
+        title = "Could not open Antigravity terminal",
+        body = "${e.javaClass.simpleName}: ${e.message ?: "(no message)"} — see idea.log for the stack trace.",
+        type = NotificationType.ERROR,
+    )
 
-    private fun notifyMcpConfigLockTimeout() {
-        val lockPath = mcpConfigLockFile().absolutePath
-        val configPath = mcpConfigFile().absolutePath
-        val group = NotificationGroupManager.getInstance()
-            .getNotificationGroup("Antigravity Companion")
-        group.createNotification(
-            "Antigravity Companion could not register MCP server",
-            """
-                Timed out after ${LOCK_TIMEOUT_MS}ms waiting for the file lock at $lockPath
-                (held during updates to $configPath). Another process may be holding it, or
-                the filesystem is slow.
-                Close any other JetBrains IDE running this plugin and reopen the project to retry.
-                See idea.log for details.
-            """.trimIndent(),
-            NotificationType.WARNING,
-        ).notify(project)
-    }
+    private fun notifyMcpConfigLockUnavailable() = notify(
+        title = "Antigravity Companion could not register MCP server",
+        body = """
+            Could not acquire a file lock on ${mcpConfigLockFile().absolutePath} — locking may be
+            unsupported on this filesystem (some network mounts, FUSE adapters), or the lock file
+            is unreadable due to permissions.
+            See idea.log for details.
+        """.trimIndent(),
+        type = NotificationType.WARNING,
+    )
 
-    private fun notifyMcpConfigWriteFailed() {
-        val path = mcpConfigFile().absolutePath
-        val group = NotificationGroupManager.getInstance()
-            .getNotificationGroup("Antigravity Companion")
-        group.createNotification(
-            "Antigravity Companion could not write MCP config",
-            """
-                Writing $path failed, so agy won't see this IDE.
-                Check file permissions and disk space; see idea.log for the I/O error.
-            """.trimIndent(),
-            NotificationType.ERROR,
-        ).notify(project)
-    }
+    private fun notifyMcpConfigLockTimeout() = notify(
+        title = "Antigravity Companion could not register MCP server",
+        body = """
+            Timed out after ${LOCK_TIMEOUT_MS}ms waiting for the file lock at
+            ${mcpConfigLockFile().absolutePath} (held during updates to
+            ${mcpConfigFile().absolutePath}). Another process may be holding it, or the
+            filesystem is slow.
+            Close any other JetBrains IDE running this plugin and reopen the project to retry.
+            See idea.log for details.
+        """.trimIndent(),
+        type = NotificationType.WARNING,
+    )
 
-    private fun notifyMcpConfigUnreadable() {
-        val path = mcpConfigFile().absolutePath
-        val group = NotificationGroupManager.getInstance()
-            .getNotificationGroup("Antigravity Companion")
-        group.createNotification(
-            "Antigravity Companion could not register MCP server",
-            """
-                $path can't be safely updated — it's unreadable, not a JSON object, or its
-                `mcpServers` field is something other than an object.
-                Fix the file (or delete it — the plugin will recreate it) and reopen the project.
-                See idea.log for details.
-            """.trimIndent(),
-            NotificationType.WARNING,
-        ).notify(project)
-    }
+    private fun notifyMcpConfigWriteFailed() = notify(
+        title = "Antigravity Companion could not write MCP config",
+        body = """
+            Writing ${mcpConfigFile().absolutePath} failed, so agy won't see this IDE.
+            Check file permissions and disk space; see idea.log for the I/O error.
+        """.trimIndent(),
+        type = NotificationType.ERROR,
+    )
 
-    private fun notifyMissingAgy() {
-        val group = NotificationGroupManager.getInstance()
-            .getNotificationGroup("Antigravity Companion")
-        val notification = group.createNotification(
-            "agy executable not found",
-            "Set the path to the agy CLI in Settings → Tools → Antigravity Companion.",
-            NotificationType.WARNING,
-        )
-        notification.addAction(object : NotificationAction("Configure…") {
+    private fun notifyMcpConfigUnreadable() = notify(
+        title = "Antigravity Companion could not register MCP server",
+        body = """
+            ${mcpConfigFile().absolutePath} can't be safely updated — it's unreadable, not a JSON
+            object, or its `mcpServers` field is something other than an object.
+            Fix the file (or delete it — the plugin will recreate it) and reopen the project.
+            See idea.log for details.
+        """.trimIndent(),
+        type = NotificationType.WARNING,
+    )
+
+    private fun notifyMissingAgy() = notify(
+        title = "agy executable not found",
+        body = "Set the path to the agy CLI in Settings → Tools → Antigravity Companion.",
+        type = NotificationType.WARNING,
+    ) {
+        addAction(object : NotificationAction("Configure…") {
             override fun actionPerformed(e: AnActionEvent, n: Notification) {
                 ShowSettingsUtil.getInstance().showSettingsDialog(
                     project, AntigravitySettingsConfigurable::class.java,
@@ -314,7 +303,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 n.expire()
             }
         })
-        notification.notify(project)
     }
 
 

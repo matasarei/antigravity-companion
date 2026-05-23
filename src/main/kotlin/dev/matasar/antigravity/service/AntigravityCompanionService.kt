@@ -51,6 +51,9 @@ import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -68,8 +71,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     // JetBrains IDEs at once doesn't have them stomp each other's mcp_config.json entry.
     private val productCode: String =
         try {
+            // Locale.ROOT — in Turkish locale, default lowercase turns "IU" into "ıu" (dotless
+            // i), which would silently change the entry name and break collision-avoidance and
+            // legacy-sweep logic across sessions/IDEs run under different locales.
             ApplicationInfo.getInstance().build.productCode
-                .lowercase()
+                .lowercase(java.util.Locale.ROOT)
                 .ifBlank { "ide" }
         } catch (_: Exception) {
             "ide"
@@ -810,28 +816,67 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
      *   `FileChannel.lock()` would throw `OverlappingFileLockException` (the JDK considers
      *   same-JVM lock requests on the same file as overlapping regardless of which channel
      *   they came from).
-     * - `FileChannel.lock()` on a sibling `.lock` file handles cross-process serialisation.
-     *   The lock is advisory but every writer goes through this helper, so the convention is
-     *   enough. The lock is released when the channel closes, and the OS also releases it on
-     *   process crash — no zombie locks survive a kill.
+     * - `FileChannel.tryLock()` with exponential backoff on a sibling `.lock` file handles
+     *   cross-process serialisation. Bounded by [LOCK_TIMEOUT_MS] so a wedged sibling process
+     *   or a slow/remote filesystem can't block project startup indefinitely. The lock is
+     *   advisory but every writer goes through this helper, so the convention is enough; the
+     *   lock is released when the channel closes, and the OS also releases it on process
+     *   crash — no zombie locks survive a kill.
      *
-     * Returns true if the block ran inside a lock, false if acquisition failed (treated as a
-     * hard failure by callers — see registerInMcpConfig's notify on false).
+     * Returns true if the block ran inside a lock, false if acquisition failed or timed out
+     * (treated as a hard failure by callers — see registerInMcpConfig's notify on false).
      */
     private inline fun withMcpConfigLock(block: () -> Unit): Boolean {
         val lockFile = mcpConfigLockFile()
         return try {
+            var ran = false
             synchronized(IN_PROCESS_MCP_LOCK) {
                 RandomAccessFile(lockFile, "rw").use { raf ->
-                    raf.channel.lock().use {
-                        block()
+                    val lock = tryAcquireLockWithBackoff(raf.channel)
+                    if (lock != null) {
+                        lock.use {
+                            block()
+                            ran = true
+                        }
                     }
                 }
             }
-            true
+            if (!ran) {
+                log.warn("Timed out waiting ${LOCK_TIMEOUT_MS}ms for mcp_config.json lock")
+            }
+            ran
         } catch (e: Exception) {
             log.warn("Could not acquire mcp_config.json lock: ${e.message}", e)
             false
+        }
+    }
+
+    /**
+     * tryLock loop with exponential backoff. Returns the held lock on success, or null if we
+     * exceed [LOCK_TIMEOUT_MS] / are interrupted / hit an unexpected overlap. Caller is
+     * responsible for closing the returned lock.
+     */
+    private fun tryAcquireLockWithBackoff(channel: FileChannel): FileLock? {
+        val deadline = System.currentTimeMillis() + LOCK_TIMEOUT_MS
+        var backoff = LOCK_INITIAL_BACKOFF_MS
+        while (true) {
+            try {
+                val lock = channel.tryLock()
+                if (lock != null) return lock
+            } catch (e: OverlappingFileLockException) {
+                // Shouldn't happen inside synchronized(IN_PROCESS_MCP_LOCK) but be defensive.
+                log.warn("Unexpected OverlappingFileLockException despite in-process sync", e)
+                return null
+            }
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) return null
+            try {
+                Thread.sleep(backoff.coerceAtMost(remaining))
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
+            backoff = (backoff * 2).coerceAtMost(LOCK_MAX_BACKOFF_MS)
         }
     }
 
@@ -986,6 +1031,13 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
          * can't rely on `FileChannel.lock()` alone within a single JVM.
          */
         private val IN_PROCESS_MCP_LOCK = Any()
+
+        // Total deadline for acquiring the cross-process mcp_config.json file lock. Bounded so
+        // a wedged sibling IDE or a slow remote FS can't block project startup indefinitely.
+        // A healthy critical section is ~10ms, so 5s is generous.
+        private const val LOCK_TIMEOUT_MS = 5_000L
+        private const val LOCK_INITIAL_BACKOFF_MS = 25L
+        private const val LOCK_MAX_BACKOFF_MS = 500L
 
         const val PLUGIN_VERSION: String = "1.2.0"
 

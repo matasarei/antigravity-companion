@@ -242,9 +242,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         group.createNotification(
             "Antigravity Companion could not register MCP server",
             """
-                $path is unreadable or not a valid JSON object, so agy won't see this IDE.
+                $path can't be safely updated — it's unreadable, not a JSON object, or its
+                `mcpServers` field is something other than an object.
                 Fix the file (or delete it — the plugin will recreate it) and reopen the project.
-                See idea.log for the parse error.
+                See idea.log for details.
             """.trimIndent(),
             NotificationType.WARNING,
         ).notify(project)
@@ -787,20 +788,31 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     /**
      * Serialises read-modify-write access to `mcp_config.json` across all processes (multiple
-     * JetBrains IDEs running this plugin concurrently). Uses an exclusive OS-level file lock on
-     * a sibling `.lock` file; the lock is advisory but every writer of the config goes through
-     * this helper, so the convention is enough. Lock is released automatically when the channel
-     * closes; the OS releases it on process crash too, so no zombie locks survive a kill.
+     * JetBrains IDEs running this plugin concurrently) AND within a single process (multiple
+     * open projects in the same IDE — each has its own AntigravityCompanionService instance).
      *
-     * Returns true if the block ran inside a lock, false if the lock could not be acquired
-     * (the latter is treated as a hard failure by callers — see registerInMcpConfig).
+     * Two layers:
+     * - `synchronized(IN_PROCESS_MCP_LOCK)` keeps the JVM-side ordering single-file. Without
+     *   it, two services in the same IDE would each open their own FileChannel and the second
+     *   `FileChannel.lock()` would throw `OverlappingFileLockException` (the JDK considers
+     *   same-JVM lock requests on the same file as overlapping regardless of which channel
+     *   they came from).
+     * - `FileChannel.lock()` on a sibling `.lock` file handles cross-process serialisation.
+     *   The lock is advisory but every writer goes through this helper, so the convention is
+     *   enough. The lock is released when the channel closes, and the OS also releases it on
+     *   process crash — no zombie locks survive a kill.
+     *
+     * Returns true if the block ran inside a lock, false if acquisition failed (treated as a
+     * hard failure by callers — see registerInMcpConfig's notify on false).
      */
     private inline fun withMcpConfigLock(block: () -> Unit): Boolean {
         val lockFile = mcpConfigLockFile()
         return try {
-            RandomAccessFile(lockFile, "rw").use { raf ->
-                raf.channel.lock().use {
-                    block()
+            synchronized(IN_PROCESS_MCP_LOCK) {
+                RandomAccessFile(lockFile, "rw").use { raf ->
+                    raf.channel.lock().use {
+                        block()
+                    }
                 }
             }
             true
@@ -818,7 +830,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             return null
         }
         if (text.isBlank()) return JsonObject(emptyMap())
-        return try {
+        val parsed = try {
             val element = Json.parseToJsonElement(text)
             if (element !is JsonObject) {
                 log.warn("mcp_config.json is not a JSON object, it is a ${element::class.simpleName}")
@@ -827,8 +839,20 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             element
         } catch (e: Exception) {
             log.warn("mcp_config.json parsing failed: ${e.message}")
-            null
+            return null
         }
+        // The merge logic below only handles `mcpServers` being absent or a JsonObject. If the
+        // user has put something else there (an array, a string, …) we must not silently
+        // overwrite it — bail and let the notify path tell them to fix the file.
+        val mcpServers = parsed["mcpServers"]
+        if (mcpServers != null && mcpServers !is JsonObject) {
+            log.warn(
+                "mcp_config.json's `mcpServers` is not a JSON object " +
+                    "(it is ${mcpServers::class.simpleName}); refusing to overwrite",
+            )
+            return null
+        }
+        return parsed
     }
 
     private fun writeMergedMcpConfig(updated: JsonObject): Boolean {
@@ -943,6 +967,12 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     companion object {
         private val log = Logger.getInstance(AntigravityCompanionService::class.java)
+
+        /**
+         * Process-wide guard for mcp_config.json mutations. See [withMcpConfigLock] for why we
+         * can't rely on `FileChannel.lock()` alone within a single JVM.
+         */
+        private val IN_PROCESS_MCP_LOCK = Any()
 
         const val PLUGIN_VERSION: String = "1.2.0"
 

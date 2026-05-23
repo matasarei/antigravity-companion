@@ -233,6 +233,22 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         ).notify(project)
     }
 
+    private fun notifyMcpConfigLockUnavailable() {
+        val path = mcpConfigLockFile().absolutePath
+        val group = NotificationGroupManager.getInstance()
+            .getNotificationGroup("Antigravity Companion")
+        group.createNotification(
+            "Antigravity Companion could not register MCP server",
+            """
+                Could not acquire a file lock on $path — locking may be unsupported on this
+                filesystem (some network mounts, FUSE adapters), or the lock file is unreadable
+                due to permissions.
+                See idea.log for details.
+            """.trimIndent(),
+            NotificationType.WARNING,
+        ).notify(project)
+    }
+
     private fun notifyMcpConfigLockTimeout() {
         val path = mcpConfigFile().absolutePath
         val group = NotificationGroupManager.getInstance()
@@ -842,7 +858,20 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
      * Returns true if the block ran inside a lock, false if acquisition failed or timed out
      * (treated as a hard failure by callers — see registerInMcpConfig's notify on false).
      */
-    private inline fun withMcpConfigLock(block: () -> Unit): Boolean {
+    /**
+     * Outcome of [withMcpConfigLock]. Distinguishing TIMEOUT (recoverable contention) from
+     * UNAVAILABLE (filesystem doesn't support locking / I/O denied) lets the caller surface a
+     * notification that names the actual problem.
+     */
+    private enum class LockOutcome { SUCCESS, TIMEOUT, UNAVAILABLE }
+
+    private sealed class LockAttempt {
+        data class Acquired(val lock: FileLock) : LockAttempt()
+        object TimedOut : LockAttempt()
+        object Unavailable : LockAttempt()
+    }
+
+    private inline fun withMcpConfigLock(block: () -> Unit): LockOutcome {
         val lockFile = mcpConfigLockFile()
         synchronized(IN_PROCESS_MCP_LOCK) {
             // Narrowly scope the IO catch to lock-file open: any exception thrown later by
@@ -853,46 +882,57 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 RandomAccessFile(lockFile, "rw")
             } catch (e: IOException) {
                 log.warn("Could not open mcp_config.json lock file: ${e.message}", e)
-                return false
+                return LockOutcome.UNAVAILABLE
             }
             raf.use {
-                val lock = tryAcquireLockWithBackoff(raf.channel)
-                if (lock == null) {
-                    log.warn("Timed out waiting ${LOCK_TIMEOUT_MS}ms for mcp_config.json lock")
-                    return false
+                return when (val attempt = tryAcquireLockWithBackoff(raf.channel)) {
+                    is LockAttempt.Acquired -> {
+                        attempt.lock.use { block() }
+                        LockOutcome.SUCCESS
+                    }
+                    LockAttempt.TimedOut -> {
+                        log.warn("Timed out waiting ${LOCK_TIMEOUT_MS}ms for mcp_config.json lock")
+                        LockOutcome.TIMEOUT
+                    }
+                    LockAttempt.Unavailable -> LockOutcome.UNAVAILABLE
                 }
-                lock.use {
-                    block()
-                }
-                return true
             }
         }
     }
 
     /**
-     * tryLock loop with exponential backoff. Returns the held lock on success, or null if we
-     * exceed [LOCK_TIMEOUT_MS] / are interrupted / hit an unexpected overlap. Caller is
-     * responsible for closing the returned lock.
+     * tryLock loop with exponential backoff. Returns:
+     * - [LockAttempt.Acquired] on success — caller is responsible for closing the lock.
+     * - [LockAttempt.TimedOut] when we exhausted [LOCK_TIMEOUT_MS] of polling without success.
+     * - [LockAttempt.Unavailable] for non-timeout failures: filesystem doesn't support locking
+     *   (`IOException`), an unexpected same-JVM overlap was reported, or the thread was
+     *   interrupted while sleeping.
      */
-    private fun tryAcquireLockWithBackoff(channel: FileChannel): FileLock? {
+    private fun tryAcquireLockWithBackoff(channel: FileChannel): LockAttempt {
         val deadline = System.currentTimeMillis() + LOCK_TIMEOUT_MS
         var backoff = LOCK_INITIAL_BACKOFF_MS
         while (true) {
             try {
                 val lock = channel.tryLock()
-                if (lock != null) return lock
+                if (lock != null) return LockAttempt.Acquired(lock)
             } catch (e: OverlappingFileLockException) {
                 // Shouldn't happen inside synchronized(IN_PROCESS_MCP_LOCK) but be defensive.
                 log.warn("Unexpected OverlappingFileLockException despite in-process sync", e)
-                return null
+                return LockAttempt.Unavailable
+            } catch (e: IOException) {
+                // tryLock can throw IOException when the FS/OS rejects locking (some network
+                // mounts, certain FUSE adapters, permission issues on the lock file). Treat as
+                // a hard "lock unavailable" — distinct from a true timeout.
+                log.warn("File locking unavailable for mcp_config.json: ${e.message}", e)
+                return LockAttempt.Unavailable
             }
             val remaining = deadline - System.currentTimeMillis()
-            if (remaining <= 0) return null
+            if (remaining <= 0) return LockAttempt.TimedOut
             try {
                 Thread.sleep(backoff.coerceAtMost(remaining))
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
-                return null
+                return LockAttempt.Unavailable
             }
             backoff = (backoff * 2).coerceAtMost(LOCK_MAX_BACKOFF_MS)
         }
@@ -968,7 +1008,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private fun registerInMcpConfig() {
         val script = bridgeScript ?: return
-        val locked = withMcpConfigLock {
+        val outcome = withMcpConfigLock {
             val existing = readExistingMcpConfig()
             if (existing == null) {
                 notifyMcpConfigUnreadable()
@@ -999,7 +1039,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             }
             log.info("Registered MCP entry '$mcpEntryName' -> ${script.absolutePath}")
         }
-        if (!locked) notifyMcpConfigLockTimeout()
+        when (outcome) {
+            LockOutcome.SUCCESS -> { /* inner block already surfaced any sub-failures */ }
+            LockOutcome.TIMEOUT -> notifyMcpConfigLockTimeout()
+            LockOutcome.UNAVAILABLE -> notifyMcpConfigLockUnavailable()
+        }
     }
 
     private fun unregisterFromMcpConfig() {

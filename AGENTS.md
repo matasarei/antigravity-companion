@@ -89,7 +89,7 @@ adding any of these, stop and re-read the principles below.
 
 6. **mcp_config.json is shared state.** Always read-modify-write. Preserve
    every key under `mcpServers` that isn't ours. Use a unique entry name per
-   project (`phpstorm-companion-<projectHash>`) so two open projects don't
+   project (`jetbrains-companion-<projectHash>`) so two open projects don't
    stomp on each other. Clean up our key in `dispose()`.
 
 7. **Keep the artifact small.** The IntelliJ Platform already ships
@@ -276,7 +276,7 @@ Companion`. If the button does nothing, check `idea.log` for an
   `agy` mid-conversation. MCP doesn't have a server-push primitive that the
   Antigravity CLI consumes for this.
 - **Multi-project caveat.** Each open project registers a unique
-  `phpstorm-companion-<projectHash>` entry. An `agy` instance in workspace A
+  `jetbrains-companion-<projectHash>` entry. An `agy` instance in workspace A
   will see workspace B's bridge command in its tool list too; the script
   fails for the dead one but the duplicate tool names can confuse the model.
   Acceptable for v1; if it becomes annoying, switch to a single shared MCP

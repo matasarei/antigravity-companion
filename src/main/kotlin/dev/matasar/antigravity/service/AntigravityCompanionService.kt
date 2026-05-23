@@ -59,7 +59,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private val projectHash: String =
         Integer.toHexString((project.basePath ?: project.name).hashCode())
-    private val mcpEntryName = "phpstorm-companion-$projectHash"
+    private val mcpEntryName = "jetbrains-companion-$projectHash"
 
     var port: Int = 0
         private set
@@ -315,7 +315,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 "initialize" -> ok(buildJsonObject {
                     put("protocolVersion", "2024-11-05")
                     put("serverInfo", buildJsonObject {
-                        put("name", "Antigravity Companion (PhpStorm)")
+                        put("name", "Antigravity JetBrains Companion")
                         put("version", PLUGIN_VERSION)
                     })
                     put("capabilities", buildJsonObject {
@@ -387,7 +387,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 NOT need to call a separate read_file tool afterwards for the same file in the same
                 turn.
 
-                If this tool returns "No active editor in PhpStorm right now.", the user has no file
+                If this tool returns "No active editor in the IDE right now.", the user has no file
                 focused — only then should you ask them which file/snippet they mean.
             """.trimIndent(),
         ),
@@ -418,7 +418,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                   - "fix the warnings" / "clean up this file"
 
                 The IDE's diagnostics are usually faster and more accurate than re-running tooling
-                from the shell, and they cover inspections specific to JetBrains (e.g. PhpStorm's
+                from the shell, and they cover inspections specific to JetBrains (e.g. IntelliJ's
                 type inference) that command-line tools miss.
 
                 If file_path is omitted, the active editor is used. To inspect a different file, pass
@@ -523,7 +523,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private fun readActiveEditor(): String = read {
         val editor = FileEditorManager.getInstance(project).selectedTextEditor
-            ?: return@read "No active editor in PhpStorm right now."
+            ?: return@read "No active editor in the IDE right now."
         val doc = editor.document
         val file = FileDocumentManager.getInstance().getFile(doc)
         val path = file?.path ?: "(unsaved buffer)"
@@ -557,7 +557,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private fun readOpenFiles(): String = read {
         val files = FileEditorManager.getInstance(project).openFiles.map { it.path }
-        if (files.isEmpty()) "No files are open in PhpStorm."
+        if (files.isEmpty()) "No files are open in the IDE."
         else files.joinToString("\n")
     }
 
@@ -636,7 +636,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     private fun writeBridgeScript() {
         val isWindows = AntigravitySettings.isWindows()
         val ext = if (isWindows) "bat" else "sh"
-        val script = File(antigravityDir(), "phpstorm-mcp-bridge-$projectHash.$ext")
+        val script = File(antigravityDir(), "jetbrains-mcp-bridge-$projectHash.$ext")
         bridgeScript = script
 
         val java = resolveJavaExecutable().absolutePath
@@ -691,19 +691,24 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         return File(dir, "mcp_config.json")
     }
 
-    private fun readExistingMcpConfig(): JsonObject {
+    private fun readExistingMcpConfig(): JsonObject? {
         val cfg = mcpConfigFile()
         if (!cfg.exists()) return JsonObject(emptyMap())
         val text = try { cfg.readText() } catch (e: IOException) {
             log.warn("Could not read mcp_config.json: ${e.message}")
-            return JsonObject(emptyMap())
+            return null
         }
         if (text.isBlank()) return JsonObject(emptyMap())
         return try {
-            (Json.parseToJsonElement(text) as? JsonObject) ?: JsonObject(emptyMap())
+            val element = Json.parseToJsonElement(text)
+            if (element !is JsonObject) {
+                log.warn("mcp_config.json is not a JSON object, it is a ${element::class.simpleName}")
+                return null
+            }
+            element
         } catch (e: Exception) {
-            log.warn("mcp_config.json is not a JSON object, overwriting: ${e.message}")
-            JsonObject(emptyMap())
+            log.warn("mcp_config.json parsing failed: ${e.message}")
+            null
         }
     }
 
@@ -718,7 +723,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private fun registerInMcpConfig() {
         val script = bridgeScript ?: return
-        val existing = readExistingMcpConfig()
+        val existing = readExistingMcpConfig() ?: return
         val existingServers = (existing["mcpServers"] as? JsonObject) ?: JsonObject(emptyMap())
 
         val updatedServers = buildJsonObject {
@@ -737,7 +742,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     private fun unregisterFromMcpConfig() {
-        val existing = readExistingMcpConfig()
+        val existing = readExistingMcpConfig() ?: return
         val servers = (existing["mcpServers"] as? JsonObject) ?: return
         if (!servers.containsKey(mcpEntryName)) return
         val updatedServers = buildJsonObject {
@@ -764,7 +769,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     companion object {
-        const val PLUGIN_VERSION: String = "1.1.0"
+        const val PLUGIN_VERSION: String = "1.2.0"
 
         /**
          * Sent as the `instructions` field on the MCP `initialize` response. Clients SHOULD
@@ -773,10 +778,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
          * so it must be assertive — descriptions on individual tools are not always enough.
          */
         private val SERVER_INSTRUCTIONS: String = """
-            This MCP server exposes live state from the user's JetBrains IDE (PhpStorm, IntelliJ
-            IDEA, WebStorm, GoLand, etc.). The user is editing code in that IDE while talking to
-            you. Treat the IDE as the authoritative source of "what the user is looking at right
-            now".
+            This MCP server exposes live state from the user's JetBrains IDE (IntelliJ IDEA,
+            PhpStorm, WebStorm, PyCharm, GoLand, etc.). The user is editing code in that IDE
+            while talking to you. Treat the IDE as the authoritative source of "what the user is
+            looking at right now".
 
             Behavior rules (follow these strictly):
 
@@ -788,7 +793,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                or clarify which snippet they mean. The IDE already knows.
 
             2. Only fall back to asking the user when `ide_get_active_editor` returns
-               "No active editor in PhpStorm right now." (meaning they truly have no file
+               "No active editor in the IDE right now." (meaning they truly have no file
                focused).
 
             3. The response from `ide_get_active_editor` already includes the full file content

@@ -13,7 +13,7 @@
       <feComposite in="SourceGraphic" in2="blur" operator="over"/>
     </filter>
   </defs>
-  <!-- Background Rounded Rect in PhpStorm style -->
+  <!-- Background Rounded Rect in JetBrains style -->
   <rect width="40" height="40" rx="8" fill="url(#bgGrad)"/>
   <rect width="38" height="38" x="1" y="1" rx="7" fill="none" stroke="#3C3F41" stroke-width="1"/>
   

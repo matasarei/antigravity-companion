@@ -838,6 +838,23 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     private fun mcpConfigLockFile(): File = File(mcpConfigFile().parentFile, "mcp_config.json.lock")
 
     /**
+     * Outcome of [withMcpConfigLock]. Distinguishing TIMEOUT (recoverable contention) from
+     * UNAVAILABLE (filesystem doesn't support locking / I/O denied) lets the caller surface a
+     * notification that names the actual problem.
+     */
+    private enum class LockOutcome { SUCCESS, TIMEOUT, UNAVAILABLE }
+
+    /**
+     * Internal projection of a single [tryAcquireLockWithBackoff] result before it's collapsed
+     * into the public [LockOutcome].
+     */
+    private sealed class LockAttempt {
+        data class Acquired(val lock: FileLock) : LockAttempt()
+        object TimedOut : LockAttempt()
+        object Unavailable : LockAttempt()
+    }
+
+    /**
      * Serialises read-modify-write access to `mcp_config.json` across all processes (multiple
      * JetBrains IDEs running this plugin concurrently) AND within a single process (multiple
      * open projects in the same IDE — each has its own AntigravityCompanionService instance).
@@ -855,22 +872,20 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
      *   lock is released when the channel closes, and the OS also releases it on process
      *   crash — no zombie locks survive a kill.
      *
-     * Returns true if the block ran inside a lock, false if acquisition failed or timed out
-     * (treated as a hard failure by callers — see registerInMcpConfig's notify on false).
+     * Returns a [LockOutcome]:
+     * - [LockOutcome.SUCCESS] — the block ran while the lock was held. Sub-failures inside the
+     *   block (read parse / write IO) surface their own notifications and are independent of
+     *   this outcome.
+     * - [LockOutcome.TIMEOUT] — we waited [LOCK_TIMEOUT_MS]ms and never got the lock; likely
+     *   contention with another IDE process.
+     * - [LockOutcome.UNAVAILABLE] — we couldn't open the lock file, or `tryLock` reported the
+     *   filesystem/OS doesn't support locking. Distinct from TIMEOUT because the user
+     *   remediation is different (fix permissions / move config off a non-locking FS).
+     *
+     * Exceptions thrown by `block()` itself are NOT caught here; they propagate so the caller's
+     * own `try`/`catch` (or `runStep` wrapper) can log them with an accurate label rather than
+     * being masked as a lock failure.
      */
-    /**
-     * Outcome of [withMcpConfigLock]. Distinguishing TIMEOUT (recoverable contention) from
-     * UNAVAILABLE (filesystem doesn't support locking / I/O denied) lets the caller surface a
-     * notification that names the actual problem.
-     */
-    private enum class LockOutcome { SUCCESS, TIMEOUT, UNAVAILABLE }
-
-    private sealed class LockAttempt {
-        data class Acquired(val lock: FileLock) : LockAttempt()
-        object TimedOut : LockAttempt()
-        object Unavailable : LockAttempt()
-    }
-
     private inline fun withMcpConfigLock(block: () -> Unit): LockOutcome {
         val lockFile = mcpConfigLockFile()
         synchronized(IN_PROCESS_MCP_LOCK) {

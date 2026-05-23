@@ -152,7 +152,12 @@ class ArtifactsPanel(
         )
     }
 
-    /** Use from the EDT (toolbar action / listener). Dispatches the listing to a pooled thread. */
+    /**
+     * Safe to call from any thread — schedules the filesystem listing on a pooled thread and
+     * applies the result back on the EDT via `reloadInline`. In practice callers are EDT-side
+     * (toolbar `actionPerformed`, Swing listeners), but the implementation itself doesn't
+     * assume that, so declaring `ActionUpdateThread.BGT` on the toolbar actions is fine.
+     */
     private fun reloadAsync() {
         if (disposed) return
         ApplicationManager.getApplication().executeOnPooledThread { reloadInline() }

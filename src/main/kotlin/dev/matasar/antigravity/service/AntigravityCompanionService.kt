@@ -51,6 +51,7 @@ import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermission
@@ -840,12 +841,21 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         val tmp = File(cfg.parentFile, "mcp_config.json.tmp.$pid.${System.nanoTime()}")
         return try {
             tmp.writeText(prettyJson.encodeToString(JsonObject.serializer(), updated))
-            Files.move(
-                tmp.toPath(),
-                cfg.toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE,
-            )
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    cfg.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                // Some filesystems (certain network mounts, FUSE adapters) refuse ATOMIC_MOVE.
+                // Fall back to a plain replace — still safer than the original in-place
+                // writeText because the new content was fully written to the temp file before
+                // we touch the live config.
+                log.info("Filesystem doesn't support atomic moves for ${cfg.absolutePath}; using non-atomic replace")
+                Files.move(tmp.toPath(), cfg.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
             true
         } catch (e: Exception) {
             log.error("Failed to write mcp_config.json", e)

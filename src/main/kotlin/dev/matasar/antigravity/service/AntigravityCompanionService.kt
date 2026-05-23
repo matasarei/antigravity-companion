@@ -47,10 +47,12 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
+import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermission
 
 @Service(Service.Level.PROJECT)
@@ -696,8 +698,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         val isWindows = AntigravitySettings.isWindows()
         val ext = if (isWindows) "bat" else "sh"
         val script = File(antigravityDir(), "jetbrains-mcp-bridge-$productCode-$projectHash.$ext")
-        bridgeScript = script
-        deleteLegacyBridgeScripts(script)
 
         val java = resolveJavaExecutable().absolutePath
         val classpath = resolveBridgeClasspath().absolutePath
@@ -705,6 +705,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         val contents = if (isWindows) windowsScript(java, classpath, port)
         else unixScript(java, classpath, port)
 
+        // Only publish bridgeScript and sweep legacy files after the new script lands on disk
+        // successfully. Otherwise registerInMcpConfig() would point agy at a missing/partial
+        // file and triggerNewTerminalSession() wouldn't fire its "failed to initialise"
+        // notification (which checks for `bridgeScript == null`).
         try {
             script.writeText(contents)
             if (!isWindows) {
@@ -721,6 +725,8 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                     // Non-POSIX FS — best effort.
                 }
             }
+            bridgeScript = script
+            deleteLegacyBridgeScripts(script)
             log.info("Wrote MCP bridge script: ${script.absolutePath}")
         } catch (e: IOException) {
             log.error("Failed to write MCP bridge script", e)
@@ -776,6 +782,33 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         return File(dir, "mcp_config.json")
     }
 
+    private fun mcpConfigLockFile(): File = File(mcpConfigFile().parentFile, "mcp_config.json.lock")
+
+    /**
+     * Serialises read-modify-write access to `mcp_config.json` across all processes (multiple
+     * JetBrains IDEs running this plugin concurrently). Uses an exclusive OS-level file lock on
+     * a sibling `.lock` file; the lock is advisory but every writer of the config goes through
+     * this helper, so the convention is enough. Lock is released automatically when the channel
+     * closes; the OS releases it on process crash too, so no zombie locks survive a kill.
+     *
+     * Returns true if the block ran inside a lock, false if the lock could not be acquired
+     * (the latter is treated as a hard failure by callers — see registerInMcpConfig).
+     */
+    private inline fun withMcpConfigLock(block: () -> Unit): Boolean {
+        val lockFile = mcpConfigLockFile()
+        return try {
+            RandomAccessFile(lockFile, "rw").use { raf ->
+                raf.channel.lock().use {
+                    block()
+                }
+            }
+            true
+        } catch (e: Exception) {
+            log.warn("Could not acquire mcp_config.json lock: ${e.message}", e)
+            false
+        }
+    }
+
     private fun readExistingMcpConfig(): JsonObject? {
         val cfg = mcpConfigFile()
         if (!cfg.exists()) return JsonObject(emptyMap())
@@ -799,64 +832,86 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private fun writeMergedMcpConfig(updated: JsonObject): Boolean {
         val cfg = mcpConfigFile()
+        // Write to a sibling temp file then atomic-move into place, so a kill mid-write can
+        // never leave a half-written `mcp_config.json` behind. Temp filename is uniqued by PID
+        // + nanoTime so two IDE processes can't pick the same tmp path while one of them is
+        // (rarely) writing without the lock held.
+        val pid = try { ProcessHandle.current().pid() } catch (_: Exception) { 0L }
+        val tmp = File(cfg.parentFile, "mcp_config.json.tmp.$pid.${System.nanoTime()}")
         return try {
-            cfg.writeText(prettyJson.encodeToString(JsonObject.serializer(), updated))
+            tmp.writeText(prettyJson.encodeToString(JsonObject.serializer(), updated))
+            Files.move(
+                tmp.toPath(),
+                cfg.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
             true
-        } catch (e: IOException) {
+        } catch (e: Exception) {
             log.error("Failed to write mcp_config.json", e)
+            try { if (tmp.exists()) tmp.delete() } catch (e2: Exception) {
+                log.debug("Could not clean up mcp_config.json temp file ${tmp.name}", e2)
+            }
             false
         }
     }
 
     private fun registerInMcpConfig() {
         val script = bridgeScript ?: return
-        val existing = readExistingMcpConfig()
-        if (existing == null) {
-            notifyMcpConfigUnreadable()
-            return
-        }
-        val existingServers = (existing["mcpServers"] as? JsonObject) ?: JsonObject(emptyMap())
-
-        val updatedServers = buildJsonObject {
-            for ((k, v) in existingServers) {
-                if (k in legacyMcpEntryNames) {
-                    log.info("Cleaning legacy MCP entry '$k' from mcp_config.json")
-                    continue
-                }
-                put(k, v)
+        val locked = withMcpConfigLock {
+            val existing = readExistingMcpConfig()
+            if (existing == null) {
+                notifyMcpConfigUnreadable()
+                return@withMcpConfigLock
             }
-            put(mcpEntryName, buildJsonObject {
-                put("command", script.absolutePath)
-                put("args", JsonArray(emptyList()))
-            })
+            val existingServers = (existing["mcpServers"] as? JsonObject) ?: JsonObject(emptyMap())
+
+            val updatedServers = buildJsonObject {
+                for ((k, v) in existingServers) {
+                    if (k in legacyMcpEntryNames) {
+                        log.info("Cleaning legacy MCP entry '$k' from mcp_config.json")
+                        continue
+                    }
+                    put(k, v)
+                }
+                put(mcpEntryName, buildJsonObject {
+                    put("command", script.absolutePath)
+                    put("args", JsonArray(emptyList()))
+                })
+            }
+            val merged = buildJsonObject {
+                for ((k, v) in existing) if (k != "mcpServers") put(k, v)
+                put("mcpServers", updatedServers)
+            }
+            if (!writeMergedMcpConfig(merged)) {
+                notifyMcpConfigWriteFailed()
+                return@withMcpConfigLock
+            }
+            log.info("Registered MCP entry '$mcpEntryName' -> ${script.absolutePath}")
         }
-        val merged = buildJsonObject {
-            for ((k, v) in existing) if (k != "mcpServers") put(k, v)
-            put("mcpServers", updatedServers)
-        }
-        if (!writeMergedMcpConfig(merged)) {
-            notifyMcpConfigWriteFailed()
-            return
-        }
-        log.info("Registered MCP entry '$mcpEntryName' -> ${script.absolutePath}")
+        if (!locked) notifyMcpConfigWriteFailed()
     }
 
     private fun unregisterFromMcpConfig() {
-        val existing = readExistingMcpConfig() ?: return
-        val servers = (existing["mcpServers"] as? JsonObject) ?: return
-        // Remove the current key AND any legacy keys this project may have left behind in
-        // earlier plugin versions — same logic as register, but applied at teardown.
-        val keysToRemove = legacyMcpEntryNames + mcpEntryName
-        if (servers.keys.none { it in keysToRemove }) return
-        val updatedServers = buildJsonObject {
-            for ((k, v) in servers) if (k !in keysToRemove) put(k, v)
-        }
-        val merged = buildJsonObject {
-            for ((k, v) in existing) if (k != "mcpServers") put(k, v)
-            put("mcpServers", updatedServers)
-        }
-        if (writeMergedMcpConfig(merged)) {
-            log.info("Removed MCP entry '$mcpEntryName' from mcp_config.json")
+        // Best-effort at teardown: skip silently if the lock can't be taken (no point popping
+        // a notification on project close).
+        withMcpConfigLock {
+            val existing = readExistingMcpConfig() ?: return@withMcpConfigLock
+            val servers = (existing["mcpServers"] as? JsonObject) ?: return@withMcpConfigLock
+            // Remove the current key AND any legacy keys this project may have left behind in
+            // earlier plugin versions — same logic as register, but applied at teardown.
+            val keysToRemove = legacyMcpEntryNames + mcpEntryName
+            if (servers.keys.none { it in keysToRemove }) return@withMcpConfigLock
+            val updatedServers = buildJsonObject {
+                for ((k, v) in servers) if (k !in keysToRemove) put(k, v)
+            }
+            val merged = buildJsonObject {
+                for ((k, v) in existing) if (k != "mcpServers") put(k, v)
+                put("mcpServers", updatedServers)
+            }
+            if (writeMergedMcpConfig(merged)) {
+                log.info("Removed MCP entry '$mcpEntryName' from mcp_config.json")
+            }
         }
     }
 

@@ -91,6 +91,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var bridgeScript: File? = null
+    // Why setup didn't finish (set by whichever init step failed). Read on the EDT when the
+    // user clicks the toolbar, so the message reflects the actual failure mode (bind vs
+    // script write vs whatever) instead of a hard-coded guess.
+    @Volatile private var initFailureReason: String? = null
     private var lastSpawnTime: Long = 0
 
     init {
@@ -121,11 +125,13 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         lastSpawnTime = now
 
         if (bridgeScript == null) {
+            val detail = initFailureReason
+                ?: "Setup did not complete when this project opened."
             NotificationGroupManager.getInstance()
                 .getNotificationGroup("Antigravity Companion")
                 .createNotification(
                     "Antigravity Companion failed to initialise",
-                    "The MCP bridge script could not be written when this project opened. See idea.log and restart the project.",
+                    "$detail See idea.log and reopen the project to retry.",
                     NotificationType.ERROR,
                 )
                 .notify(project)
@@ -293,6 +299,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             }
         } catch (e: Exception) {
             log.error("Failed to start MCP server", e)
+            initFailureReason = "Could not start the MCP server on a local port (${e.javaClass.simpleName})."
         }
     }
 
@@ -695,6 +702,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         // the failure when the user tries to start a session.
         if (port <= 0) {
             log.warn("Skipping bridge script write: MCP server didn't bind a port")
+            // Preserve any earlier reason (e.g. set by startMcpServer's catch) so the toolbar
+            // notification reports the root cause rather than this downstream symptom.
+            if (initFailureReason == null) {
+                initFailureReason = "The MCP server didn't bind to a local port."
+            }
             return
         }
         val isWindows = AntigravitySettings.isWindows()
@@ -732,6 +744,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             log.info("Wrote MCP bridge script: ${script.absolutePath}")
         } catch (e: IOException) {
             log.error("Failed to write MCP bridge script", e)
+            initFailureReason = "The MCP bridge script could not be written (${e.javaClass.simpleName})."
         }
     }
 

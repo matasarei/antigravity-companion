@@ -783,6 +783,16 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         } catch (e: IOException) {
             log.error("Failed to write MCP bridge script", e)
             initFailureReason = "The MCP bridge script could not be written (${e.javaClass.simpleName})."
+            // Best-effort: remove any partial file writeText left behind, so the user doesn't
+            // end up with a corrupt `jetbrains-mcp-bridge-...` sitting in ~/.gemini/ that
+            // someone might invoke from outside the IDE.
+            try {
+                if (script.exists() && !script.delete()) {
+                    log.debug("Could not delete partial bridge script ${script.absolutePath}")
+                }
+            } catch (e2: Exception) {
+                log.debug("Cleanup of partial bridge script ${script.absolutePath} failed", e2)
+            }
         }
     }
 
@@ -886,7 +896,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
      * own `try`/`catch` (or `runStep` wrapper) can log them with an accurate label rather than
      * being masked as a lock failure.
      */
-    private inline fun withMcpConfigLock(block: () -> Unit): LockOutcome {
+    private inline fun withMcpConfigLock(
+        timeoutMs: Long = LOCK_TIMEOUT_MS,
+        block: () -> Unit,
+    ): LockOutcome {
         val lockFile = mcpConfigLockFile()
         synchronized(IN_PROCESS_MCP_LOCK) {
             // Narrowly scope the IO catch to lock-file open: any exception thrown later by
@@ -900,13 +913,13 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 return LockOutcome.UNAVAILABLE
             }
             raf.use {
-                return when (val attempt = tryAcquireLockWithBackoff(raf.channel)) {
+                return when (val attempt = tryAcquireLockWithBackoff(raf.channel, timeoutMs)) {
                     is LockAttempt.Acquired -> {
                         attempt.lock.use { block() }
                         LockOutcome.SUCCESS
                     }
                     LockAttempt.TimedOut -> {
-                        log.warn("Timed out waiting ${LOCK_TIMEOUT_MS}ms for mcp_config.json lock")
+                        log.warn("Timed out waiting ${timeoutMs}ms for mcp_config.json lock")
                         LockOutcome.TIMEOUT
                     }
                     LockAttempt.Unavailable -> LockOutcome.UNAVAILABLE
@@ -923,8 +936,8 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
      *   (`IOException`), an unexpected same-JVM overlap was reported, or the thread was
      *   interrupted while sleeping.
      */
-    private fun tryAcquireLockWithBackoff(channel: FileChannel): LockAttempt {
-        val deadline = System.currentTimeMillis() + LOCK_TIMEOUT_MS
+    private fun tryAcquireLockWithBackoff(channel: FileChannel, timeoutMs: Long): LockAttempt {
+        val deadline = System.currentTimeMillis() + timeoutMs
         var backoff = LOCK_INITIAL_BACKOFF_MS
         while (true) {
             try {
@@ -957,7 +970,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         val cfg = mcpConfigFile()
         if (!cfg.exists()) return JsonObject(emptyMap())
         val text = try { cfg.readText() } catch (e: IOException) {
-            log.warn("Could not read mcp_config.json: ${e.message}")
+            log.warn("Could not read mcp_config.json: ${e.message}", e)
             return null
         }
         if (text.isBlank()) return JsonObject(emptyMap())
@@ -969,7 +982,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             }
             element
         } catch (e: Exception) {
-            log.warn("mcp_config.json parsing failed: ${e.message}")
+            log.warn("mcp_config.json parsing failed: ${e.message}", e)
             return null
         }
         // The merge logic below only handles `mcpServers` being absent or a JsonObject. If the
@@ -1062,9 +1075,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     private fun unregisterFromMcpConfig() {
-        // Best-effort at teardown: skip silently if the lock can't be taken (no point popping
-        // a notification on project close).
-        withMcpConfigLock {
+        // Best-effort at teardown: short timeout so dispose() isn't held up under contention,
+        // and skip silently on any non-success outcome (no point popping a notification on
+        // project close). A stale entry left here is harmless — the next time this same
+        // (IDE, project) opens, register overwrites our key with fresh content.
+        withMcpConfigLock(timeoutMs = SHUTDOWN_LOCK_TIMEOUT_MS) {
             val existing = readExistingMcpConfig() ?: return@withMcpConfigLock
             val servers = (existing["mcpServers"] as? JsonObject) ?: return@withMcpConfigLock
             // Remove the current key AND any legacy keys this project may have left behind in
@@ -1113,6 +1128,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         // a wedged sibling IDE or a slow remote FS can't block project startup indefinitely.
         // A healthy critical section is ~10ms, so 5s is generous.
         private const val LOCK_TIMEOUT_MS = 5_000L
+        // Much tighter budget for dispose() — we'd rather leave a stale entry to be cleaned up
+        // by the next project's register sweep than delay shutdown waiting on a contended FS
+        // lock that may not free in time anyway.
+        private const val SHUTDOWN_LOCK_TIMEOUT_MS = 200L
         private const val LOCK_INITIAL_BACKOFF_MS = 25L
         private const val LOCK_MAX_BACKOFF_MS = 500L
 

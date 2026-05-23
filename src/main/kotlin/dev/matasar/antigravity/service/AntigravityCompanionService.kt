@@ -6,6 +6,7 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
@@ -21,6 +22,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.LocalFileSystem
 import dev.matasar.antigravity.bridge.StdioBridge
+import org.jetbrains.plugins.terminal.TerminalTabState
+import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import dev.matasar.antigravity.settings.AntigravitySettings
 import dev.matasar.antigravity.settings.AntigravitySettingsConfigurable
 import kotlinx.coroutines.CoroutineScope
@@ -53,7 +56,6 @@ import java.nio.file.attribute.PosixFilePermission
 @Service(Service.Level.PROJECT)
 class AntigravityCompanionService(private val project: Project) : Disposable {
 
-    private val log = Logger.getInstance(AntigravityCompanionService::class.java)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val prettyJson = Json { prettyPrint = true }
 
@@ -63,19 +65,20 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     // JetBrains IDEs at once doesn't have them stomp each other's mcp_config.json entry.
     private val productCode: String =
         try {
-            com.intellij.openapi.application.ApplicationInfo.getInstance().build.productCode
+            ApplicationInfo.getInstance().build.productCode
                 .lowercase()
                 .ifBlank { "ide" }
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
             "ide"
         }
     private val mcpEntryName = "jetbrains-companion-$productCode-$projectHash"
 
+    @Volatile
     var port: Int = 0
         private set
 
-    private var serverSocket: ServerSocket? = null
-    private var bridgeScript: File? = null
+    @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var bridgeScript: File? = null
     private var lastSpawnTime: Long = 0
 
     init {
@@ -126,7 +129,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
         ApplicationManager.getApplication().invokeLater {
             try {
-                val tm = org.jetbrains.plugins.terminal.TerminalToolWindowManager.getInstance(project)
+                val tm = TerminalToolWindowManager.getInstance(project)
                 // Non-deprecated path: configure a TerminalTabState with the working dir, tab
                 // name, and the agy command, then hand it to the default terminal runner. We
                 // wrap the agy invocation in a login + interactive shell so PATH and other
@@ -135,7 +138,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 // launchd's sparse PATH, so tools like docker-compose / brew-installed binaries
                 // are invisible to agy and its child commands. `exec` replaces the shell with
                 // agy so there's no zombie shell process in the tree.
-                val tabState = org.jetbrains.plugins.terminal.TerminalTabState().apply {
+                val tabState = TerminalTabState().apply {
                     myTabName = "Antigravity"
                     myWorkingDirectory = project.basePath
                     myShellCommand = buildAgyInvocation(agyPath)
@@ -212,8 +215,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             .getNotificationGroup("Antigravity Companion")
         group.createNotification(
             "Antigravity Companion could not write MCP config",
-            "Writing $path failed, so agy won't see this IDE. Check file permissions and disk space; " +
-                "see idea.log for the I/O error.",
+            """
+                Writing $path failed, so agy won't see this IDE.
+                Check file permissions and disk space; see idea.log for the I/O error.
+            """.trimIndent(),
             NotificationType.ERROR,
         ).notify(project)
     }
@@ -224,9 +229,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             .getNotificationGroup("Antigravity Companion")
         group.createNotification(
             "Antigravity Companion could not register MCP server",
-            "$path is unreadable or not a valid JSON object, so agy won't see this IDE. " +
-                "Fix the file (or delete it — the plugin will recreate it) and reopen the project. " +
-                "See idea.log for the parse error.",
+            """
+                $path is unreadable or not a valid JSON object, so agy won't see this IDE.
+                Fix the file (or delete it — the plugin will recreate it) and reopen the project.
+                See idea.log for the parse error.
+            """.trimIndent(),
             NotificationType.WARNING,
         ).notify(project)
     }
@@ -669,6 +676,14 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     private fun writeBridgeScript() {
+        // If the MCP server failed to bind, port is still 0; writing a bridge script (and
+        // registering it in mcp_config.json) would point agy at a dead socket. Skip the rest of
+        // setup and rely on the toolbar action's "failed to initialise" notification to surface
+        // the failure when the user tries to start a session.
+        if (port <= 0) {
+            log.warn("Skipping bridge script write: MCP server didn't bind a port")
+            return
+        }
         val isWindows = AntigravitySettings.isWindows()
         val ext = if (isWindows) "bat" else "sh"
         val script = File(antigravityDir(), "jetbrains-mcp-bridge-$productCode-$projectHash.$ext")
@@ -805,15 +820,21 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     override fun dispose() {
         log.info("Disposing AntigravityCompanionService for project $projectHash")
-        try { serverSocket?.close() } catch (_: Exception) { /* ignore */ }
-        try { scope.cancel() } catch (_: Exception) { /* ignore */ }
+        try { serverSocket?.close() } catch (e: Exception) { log.debug("serverSocket.close() failed during dispose", e) }
+        try { scope.cancel() } catch (e: Exception) { log.debug("scope.cancel() failed during dispose", e) }
         try { unregisterFromMcpConfig() } catch (e: Exception) {
             log.warn("Failed to unregister from mcp_config.json", e)
         }
-        try { bridgeScript?.takeIf { it.exists() }?.delete() } catch (_: Exception) { /* ignore */ }
+        try {
+            bridgeScript?.takeIf { it.exists() }?.delete()
+        } catch (e: Exception) {
+            log.debug("bridgeScript delete failed during dispose", e)
+        }
     }
 
     companion object {
+        private val log = Logger.getInstance(AntigravityCompanionService::class.java)
+
         const val PLUGIN_VERSION: String = "1.2.0"
 
         /**

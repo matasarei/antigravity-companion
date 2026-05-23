@@ -75,16 +75,14 @@
     <depends>org.jetbrains.plugins.terminal</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <applicationService
-            serviceImplementation="dev.matasar.antigravity.settings.AntigravitySettings"/>
+        <!-- AntigravitySettings and AntigravityCompanionService declare themselves via the
+             @Service annotation; no explicit <applicationService>/<projectService> needed. -->
         <applicationConfigurable
             parentId="tools"
             instance="dev.matasar.antigravity.settings.AntigravitySettingsConfigurable"
             id="dev.matasar.antigravity.settings"
             displayName="Antigravity Companion"/>
 
-        <projectService
-            serviceImplementation="dev.matasar.antigravity.service.AntigravityCompanionService"/>
         <postStartupActivity
             implementation="dev.matasar.antigravity.startup.AntigravityStartupActivity"/>
         <notificationGroup

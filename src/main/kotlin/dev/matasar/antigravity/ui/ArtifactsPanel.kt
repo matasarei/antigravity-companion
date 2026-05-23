@@ -1,9 +1,11 @@
 package dev.matasar.antigravity.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.actions.RevealFileAction
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
@@ -31,6 +33,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.io.File
 import javax.swing.DefaultListModel
+import javax.swing.Icon
 import javax.swing.JList
 import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
@@ -53,7 +56,6 @@ class ArtifactsPanel(
     private val toolWindow: ToolWindow,
 ) : SimpleToolWindowPanel(true, true), Disposable {
 
-    private val log = Logger.getInstance(ArtifactsPanel::class.java)
     @Volatile private var disposed = false
     @Volatile private var pollScheduled = false
     private val listModel = DefaultListModel<ArtifactItem>()
@@ -80,6 +82,7 @@ class ArtifactsPanel(
     init {
         // Toolbar: Refresh + Open Brain Folder
         val refreshAction = object : AnAction("Refresh", "Reload the artifact list now", AllIcons.Actions.Refresh) {
+            override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
             override fun actionPerformed(e: AnActionEvent) {
                 reloadAsync()
             }
@@ -89,6 +92,7 @@ class ArtifactsPanel(
             "Reveal the agy brain folder in the system file manager",
             AllIcons.Nodes.Folder,
         ) {
+            override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
             override fun actionPerformed(e: AnActionEvent) {
                 openBrainFolder()
             }
@@ -218,7 +222,7 @@ class ArtifactsPanel(
 
     private fun openBrainFolder() {
         val dir = ArtifactsRepository.brainBaseDir() ?: return
-        com.intellij.ide.actions.RevealFileAction.openFile(dir)
+        RevealFileAction.openFile(dir)
     }
 
     override fun dispose() {
@@ -228,6 +232,7 @@ class ArtifactsPanel(
     }
 
     companion object {
+        private val log = Logger.getInstance(ArtifactsPanel::class.java)
         private const val POLL_INTERVAL_MS = 3000
     }
 }
@@ -259,7 +264,7 @@ private class ArtifactCellRenderer : ColoredListCellRenderer<ArtifactItem>() {
         // Per-row tooltips are handled by JList.getToolTipText in ArtifactsPanel.
     }
 
-    private fun iconFor(name: String): javax.swing.Icon = when {
+    private fun iconFor(name: String): Icon = when {
         name.endsWith(".md", ignoreCase = true) -> AllIcons.FileTypes.Text
         name.endsWith(".json", ignoreCase = true) -> AllIcons.FileTypes.Json
         else -> AllIcons.FileTypes.Any_type
@@ -282,6 +287,8 @@ object ArtifactsRepository {
 
     private val log = Logger.getInstance(ArtifactsRepository::class.java)
     private val UUID_RE = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    private const val MAX_BRAIN_DIRS = 20
+    private const val MAX_ARTIFACTS = 100
 
     /** Directory holding all conversations' brain entries, regardless of project. */
     fun brainBaseDir(): File? {
@@ -321,9 +328,6 @@ object ArtifactsRepository {
         }
         return results.sortedByDescending { it.mtime }.take(MAX_ARTIFACTS)
     }
-
-    private const val MAX_BRAIN_DIRS = 20
-    private const val MAX_ARTIFACTS = 100
 
     private fun readMetadata(file: File): ArtifactMetadata? {
         if (!file.isFile) return null

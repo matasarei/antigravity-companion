@@ -59,7 +59,17 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private val projectHash: String =
         Integer.toHexString((project.basePath ?: project.name).hashCode())
-    private val mcpEntryName = "jetbrains-companion-$projectHash"
+    // Product code (IU/IC/PS/WS/PY/GO/RR/...) is folded in so opening the same project in two
+    // JetBrains IDEs at once doesn't have them stomp each other's mcp_config.json entry.
+    private val productCode: String =
+        try {
+            com.intellij.openapi.application.ApplicationInfo.getInstance().build.productCode
+                .lowercase()
+                .ifBlank { "ide" }
+        } catch (_: Throwable) {
+            "ide"
+        }
+    private val mcpEntryName = "jetbrains-companion-$productCode-$projectHash"
 
     var port: Int = 0
         private set
@@ -192,6 +202,18 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         group.createNotification(
             "Could not open Antigravity terminal",
             "${e.javaClass.simpleName}: ${e.message ?: "(no message)"} — see idea.log for the stack trace.",
+            NotificationType.ERROR,
+        ).notify(project)
+    }
+
+    private fun notifyMcpConfigWriteFailed() {
+        val path = mcpConfigFile().absolutePath
+        val group = NotificationGroupManager.getInstance()
+            .getNotificationGroup("Antigravity Companion")
+        group.createNotification(
+            "Antigravity Companion could not write MCP config",
+            "Writing $path failed, so agy won't see this IDE. Check file permissions and disk space; " +
+                "see idea.log for the I/O error.",
             NotificationType.ERROR,
         ).notify(project)
     }
@@ -649,7 +671,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     private fun writeBridgeScript() {
         val isWindows = AntigravitySettings.isWindows()
         val ext = if (isWindows) "bat" else "sh"
-        val script = File(antigravityDir(), "jetbrains-mcp-bridge-$projectHash.$ext")
+        val script = File(antigravityDir(), "jetbrains-mcp-bridge-$productCode-$projectHash.$ext")
         bridgeScript = script
 
         val java = resolveJavaExecutable().absolutePath
@@ -725,12 +747,14 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         }
     }
 
-    private fun writeMergedMcpConfig(updated: JsonObject) {
+    private fun writeMergedMcpConfig(updated: JsonObject): Boolean {
         val cfg = mcpConfigFile()
-        try {
+        return try {
             cfg.writeText(prettyJson.encodeToString(JsonObject.serializer(), updated))
+            true
         } catch (e: IOException) {
             log.error("Failed to write mcp_config.json", e)
+            false
         }
     }
 
@@ -754,7 +778,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             for ((k, v) in existing) if (k != "mcpServers") put(k, v)
             put("mcpServers", updatedServers)
         }
-        writeMergedMcpConfig(merged)
+        if (!writeMergedMcpConfig(merged)) {
+            notifyMcpConfigWriteFailed()
+            return
+        }
         log.info("Registered MCP entry '$mcpEntryName' -> ${script.absolutePath}")
     }
 
@@ -769,8 +796,9 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             for ((k, v) in existing) if (k != "mcpServers") put(k, v)
             put("mcpServers", updatedServers)
         }
-        writeMergedMcpConfig(merged)
-        log.info("Removed MCP entry '$mcpEntryName' from mcp_config.json")
+        if (writeMergedMcpConfig(merged)) {
+            log.info("Removed MCP entry '$mcpEntryName' from mcp_config.json")
+        }
     }
 
     // ---------------------------------------------------------------- Lifecycle

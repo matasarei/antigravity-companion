@@ -879,17 +879,18 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
      *   same-JVM lock requests on the same file as overlapping regardless of which channel
      *   they came from).
      * - `FileChannel.tryLock()` with exponential backoff on a sibling `.lock` file handles
-     *   cross-process serialisation. Bounded by [LOCK_TIMEOUT_MS] so a wedged sibling process
-     *   or a slow/remote filesystem can't block project startup indefinitely. The lock is
-     *   advisory but every writer goes through this helper, so the convention is enough; the
-     *   lock is released when the channel closes, and the OS also releases it on process
-     *   crash — no zombie locks survive a kill.
+     *   cross-process serialisation. Bounded by [timeoutMs] (default [LOCK_TIMEOUT_MS] for
+     *   register-time calls; [SHUTDOWN_LOCK_TIMEOUT_MS] for dispose) so a wedged sibling
+     *   process or a slow/remote filesystem can't block project startup or shutdown
+     *   indefinitely. The lock is advisory but every writer goes through this helper, so the
+     *   convention is enough; the lock is released when the channel closes, and the OS also
+     *   releases it on process crash — no zombie locks survive a kill.
      *
      * Returns a [LockOutcome]:
      * - [LockOutcome.SUCCESS] — the block ran while the lock was held. Sub-failures inside the
      *   block (read parse / write IO) surface their own notifications and are independent of
      *   this outcome.
-     * - [LockOutcome.TIMEOUT] — we waited [LOCK_TIMEOUT_MS]ms and never got the lock; likely
+     * - [LockOutcome.TIMEOUT] — we waited [timeoutMs]ms and never got the lock; likely
      *   contention with another IDE process.
      * - [LockOutcome.UNAVAILABLE] — we couldn't open the lock file, or `tryLock` reported the
      *   filesystem/OS doesn't support locking. Distinct from TIMEOUT because the user
@@ -934,7 +935,9 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     /**
      * tryLock loop with exponential backoff. Returns:
      * - [LockAttempt.Acquired] on success — caller is responsible for closing the lock.
-     * - [LockAttempt.TimedOut] when we exhausted [LOCK_TIMEOUT_MS] of polling without success.
+     * - [LockAttempt.TimedOut] when we exhausted [timeoutMs] of polling without success.
+     *   Callers pass [LOCK_TIMEOUT_MS] for register-time work and [SHUTDOWN_LOCK_TIMEOUT_MS]
+     *   for dispose() so shutdown isn't held up by contention.
      * - [LockAttempt.Unavailable] for non-timeout failures: filesystem doesn't support locking
      *   (`IOException`), an unexpected same-JVM overlap was reported, or the thread was
      *   interrupted while sleeping.

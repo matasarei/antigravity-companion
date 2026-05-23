@@ -73,6 +73,15 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         }
     private val mcpEntryName = "jetbrains-companion-$productCode-$projectHash"
 
+    // Keys this project used to register under, before the entry-name format included a product
+    // code. Swept on every register/unregister so upgraders don't accumulate orphans in
+    // mcp_config.json. Cross-product entries (`jetbrains-companion-<otherProductCode>-...`)
+    // belong to other JetBrains IDEs running the plugin and are deliberately NOT swept.
+    private val legacyMcpEntryNames: Set<String> = setOf(
+        "phpstorm-companion-$projectHash",
+        "jetbrains-companion-$projectHash",
+    )
+
     @Volatile
     var port: Int = 0
         private set
@@ -688,6 +697,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         val ext = if (isWindows) "bat" else "sh"
         val script = File(antigravityDir(), "jetbrains-mcp-bridge-$productCode-$projectHash.$ext")
         bridgeScript = script
+        deleteLegacyBridgeScripts(script)
 
         val java = resolveJavaExecutable().absolutePath
         val classpath = resolveBridgeClasspath().absolutePath
@@ -714,6 +724,31 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             log.info("Wrote MCP bridge script: ${script.absolutePath}")
         } catch (e: IOException) {
             log.error("Failed to write MCP bridge script", e)
+        }
+    }
+
+    /**
+     * Removes bridge scripts written by older plugin versions for this project (formats that
+     * predate the productCode being folded into the filename). Best-effort; failures are
+     * logged at debug — a leftover .sh in `~/.gemini/antigravity-cli/` is harmless beyond
+     * looking untidy.
+     */
+    private fun deleteLegacyBridgeScripts(currentScript: File) {
+        val dir = antigravityDir()
+        val legacyNames = listOf(
+            "phpstorm-mcp-bridge-$projectHash.sh",
+            "phpstorm-mcp-bridge-$projectHash.bat",
+            "jetbrains-mcp-bridge-$projectHash.sh",
+            "jetbrains-mcp-bridge-$projectHash.bat",
+        )
+        for (name in legacyNames) {
+            val f = File(dir, name)
+            if (!f.exists() || f == currentScript) continue
+            try {
+                if (f.delete()) log.info("Removed legacy bridge script ${f.name}")
+            } catch (e: Exception) {
+                log.debug("Could not remove legacy bridge script ${f.name}", e)
+            }
         }
     }
 
@@ -783,7 +818,13 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         val existingServers = (existing["mcpServers"] as? JsonObject) ?: JsonObject(emptyMap())
 
         val updatedServers = buildJsonObject {
-            for ((k, v) in existingServers) put(k, v)
+            for ((k, v) in existingServers) {
+                if (k in legacyMcpEntryNames) {
+                    log.info("Cleaning legacy MCP entry '$k' from mcp_config.json")
+                    continue
+                }
+                put(k, v)
+            }
             put(mcpEntryName, buildJsonObject {
                 put("command", script.absolutePath)
                 put("args", JsonArray(emptyList()))
@@ -803,9 +844,12 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     private fun unregisterFromMcpConfig() {
         val existing = readExistingMcpConfig() ?: return
         val servers = (existing["mcpServers"] as? JsonObject) ?: return
-        if (!servers.containsKey(mcpEntryName)) return
+        // Remove the current key AND any legacy keys this project may have left behind in
+        // earlier plugin versions — same logic as register, but applied at teardown.
+        val keysToRemove = legacyMcpEntryNames + mcpEntryName
+        if (servers.keys.none { it in keysToRemove }) return
         val updatedServers = buildJsonObject {
-            for ((k, v) in servers) if (k != mcpEntryName) put(k, v)
+            for ((k, v) in servers) if (k !in keysToRemove) put(k, v)
         }
         val merged = buildJsonObject {
             for ((k, v) in existing) if (k != "mcpServers") put(k, v)

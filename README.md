@@ -72,13 +72,16 @@ project open the plugin:
 
 1. Starts a small JSON-RPC server on `127.0.0.1:<random>` (line-delimited MCP
    over a plain TCP socket).
-2. Writes a per-project bridge script — `jetbrains-mcp-bridge-<hash>.sh` on
-   Unix or `.bat` on Windows — under `~/.gemini/antigravity-cli/`. The script
-   uses the IDE's bundled JBR to run a tiny pure-Java stdio↔TCP relay, so
-   `agy` (which speaks stdio MCP) can reach the in-IDE TCP server with no
-   external dependencies.
+2. Writes a per-project bridge script —
+   `jetbrains-mcp-bridge-<productCode>-<projectHash>.sh` on Unix or `.bat` on
+   Windows — under `~/.gemini/antigravity-cli/`. `<productCode>` is the
+   JetBrains IDE code (`iu`, `ps`, `ws`, `py`, `go`, …) so two IDEs opening
+   the same project don't collide. The script uses the IDE's bundled JBR to
+   run a tiny pure-Java stdio↔TCP relay, so `agy` (which speaks stdio MCP)
+   can reach the in-IDE TCP server with no external dependencies.
 3. Merges its entry into `mcp_config.json` under
-   `mcpServers.jetbrains-companion-<hash>` (preserving any other entries).
+   `mcpServers.jetbrains-companion-<productCode>-<projectHash>` (preserving
+   any other entries).
 
 On project close it removes the config entry and deletes the bridge script.
 
@@ -93,8 +96,8 @@ On project close it removes the config entry and deletes the bridge script.
 
 | Path | Purpose |
 | --- | --- |
-| `~/.gemini/config/mcp_config.json` | The plugin merges/removes its `jetbrains-companion-<hash>` entry here. Other entries are preserved. |
-| `~/.gemini/antigravity-cli/jetbrains-mcp-bridge-<hash>.{sh,bat}` | Auto-generated bridge script; deleted on project close. Do not edit by hand. |
+| `~/.gemini/config/mcp_config.json` | The plugin merges/removes its `jetbrains-companion-<productCode>-<projectHash>` entry here. Other entries are preserved. Stale `phpstorm-companion-*` keys from old plugin versions are swept on register. |
+| `~/.gemini/antigravity-cli/jetbrains-mcp-bridge-<productCode>-<projectHash>.{sh,bat}` | Auto-generated bridge script; deleted on project close. Do not edit by hand. |
 | `~/.gemini/antigravity-cli/cli.log` *(symlink to latest run)* | `agy`'s log — useful when MCP traffic looks wrong. |
 | IDE `idea.log` | Plugin logs. Look for `AntigravityCompanionService`: `MCP server listening on 127.0.0.1:<port>`, `MCP client connected from …`. |
 
@@ -180,9 +183,10 @@ build.gradle.kts, gradle.properties, settings.gradle.kts
   mid-conversation; `agy` calls back over MCP when it decides it needs IDE
   state.
 - **Multi-project.** Each open project registers a separate
-  `jetbrains-companion-<hash>` entry. A running `agy` in workspace A will also
-  see workspace B's tools in its catalog; only the live project's bridge
-  succeeds, but the duplicate tool names can confuse the model.
+  `jetbrains-companion-<productCode>-<projectHash>` entry. A running `agy` in
+  workspace A will also see workspace B's tools in its catalog; only the live
+  project's bridge succeeds, but the duplicate tool names can confuse the
+  model.
 
 ## License
 

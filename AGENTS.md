@@ -89,8 +89,12 @@ adding any of these, stop and re-read the principles below.
 
 6. **mcp_config.json is shared state.** Always read-modify-write. Preserve
    every key under `mcpServers` that isn't ours. Use a unique entry name per
-   project (`jetbrains-companion-<projectHash>`) so two open projects don't
-   stomp on each other. Clean up our key in `dispose()`.
+   (IDE, project) pair —
+   `jetbrains-companion-<productCode>-<projectHash>` — so opening the same
+   project in two JetBrains IDEs at once doesn't have them stomp each
+   other's entry. Sweep legacy formats (`phpstorm-companion-*`,
+   `jetbrains-companion-<projectHash>` without a productCode) on register so
+   upgraders don't accumulate orphans. Clean up our key in `dispose()`.
 
 7. **Keep the artifact small.** The IntelliJ Platform already ships
    kotlin-stdlib and most of what we need. Only `kotlinx-serialization-json`
@@ -276,9 +280,10 @@ Companion`. If the button does nothing, check `idea.log` for an
   `agy` mid-conversation. MCP doesn't have a server-push primitive that the
   Antigravity CLI consumes for this.
 - **Multi-project caveat.** Each open project registers a unique
-  `jetbrains-companion-<projectHash>` entry. An `agy` instance in workspace A
-  will see workspace B's bridge command in its tool list too; the script
-  fails for the dead one but the duplicate tool names can confuse the model.
+  `jetbrains-companion-<productCode>-<projectHash>` entry. An `agy` instance
+  in workspace A will see workspace B's bridge command in its tool list too;
+  the script fails for the dead one but the duplicate tool names can confuse
+  the model.
   Acceptable for v1; if it becomes annoying, switch to a single shared MCP
   entry whose target is chosen at connect time.
 - **No marketplace.** The plugin is not currently published to JetBrains

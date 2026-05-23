@@ -1,8 +1,9 @@
 # Antigravity Companion for JetBrains IDEs
 
 A JetBrains plugin that bridges the [Antigravity](https://antigravity.google) CLI
-(`agy`) with PhpStorm (and other IntelliJ-based IDEs) so the agent can see your
-active file, selection, open tabs, and inspection diagnostics on demand.
+(`agy`) with JetBrains IDEs (IntelliJ IDEA, PhpStorm, WebStorm, PyCharm, GoLand,
+and other IntelliJ-based IDEs) so the agent can see your active file, selection,
+open tabs, and inspection diagnostics on demand.
 
 ## Features
 
@@ -72,13 +73,16 @@ project open the plugin:
 
 1. Starts a small JSON-RPC server on `127.0.0.1:<random>` (line-delimited MCP
    over a plain TCP socket).
-2. Writes a per-project bridge script — `phpstorm-mcp-bridge-<hash>.sh` on
-   Unix or `.bat` on Windows — under `~/.gemini/antigravity-cli/`. The script
-   uses the IDE's bundled JBR to run a tiny pure-Java stdio↔TCP relay, so
-   `agy` (which speaks stdio MCP) can reach the in-IDE TCP server with no
-   external dependencies.
+2. Writes a per-project bridge script —
+   `jetbrains-mcp-bridge-<productCode>-<projectHash>.sh` on Unix or `.bat` on
+   Windows — under `~/.gemini/antigravity-cli/`. `<productCode>` is the
+   JetBrains IDE code (`iu`, `ps`, `ws`, `py`, `go`, …) so two IDEs opening
+   the same project don't collide. The script uses the IDE's bundled JBR to
+   run a tiny pure-Java stdio↔TCP relay, so `agy` (which speaks stdio MCP)
+   can reach the in-IDE TCP server with no external dependencies.
 3. Merges its entry into `mcp_config.json` under
-   `mcpServers.phpstorm-companion-<hash>` (preserving any other entries).
+   `mcpServers.jetbrains-companion-<productCode>-<projectHash>` (preserving
+   any other entries).
 
 On project close it removes the config entry and deletes the bridge script.
 
@@ -93,8 +97,8 @@ On project close it removes the config entry and deletes the bridge script.
 
 | Path | Purpose |
 | --- | --- |
-| `~/.gemini/config/mcp_config.json` | The plugin merges/removes its `phpstorm-companion-<hash>` entry here. Other entries are preserved. |
-| `~/.gemini/antigravity-cli/phpstorm-mcp-bridge-<hash>.{sh,bat}` | Auto-generated bridge script; deleted on project close. Do not edit by hand. |
+| `~/.gemini/config/mcp_config.json` | The plugin merges/removes its `jetbrains-companion-<productCode>-<projectHash>` entry here. Other entries are preserved. On register, the plugin also removes any legacy keys for **this project's** `projectHash` (e.g. `phpstorm-companion-<projectHash>`) left behind by older plugin versions; legacy entries belonging to other projects are not touched. |
+| `~/.gemini/antigravity-cli/jetbrains-mcp-bridge-<productCode>-<projectHash>.{sh,bat}` | Auto-generated bridge script; deleted on project close. Do not edit by hand. |
 | `~/.gemini/antigravity-cli/cli.log` *(symlink to latest run)* | `agy`'s log — useful when MCP traffic looks wrong. |
 | IDE `idea.log` | Plugin logs. Look for `AntigravityCompanionService`: `MCP server listening on 127.0.0.1:<port>`, `MCP client connected from …`. |
 
@@ -109,7 +113,7 @@ or install `agy` to one of the auto-detected locations.
 The plugin probably isn't registered. Check:
 1. **Settings → Plugins** — make sure the plugin is enabled.
 2. `idea.log` for `MCP server listening on 127.0.0.1:<port>`.
-3. `~/.gemini/config/mcp_config.json` contains a `phpstorm-companion-*` entry.
+3. `~/.gemini/config/mcp_config.json` contains a `jetbrains-companion-*` entry.
 
 **`agy` log shows `Connection refused` or socket errors on startup.**
 The IDE (or that project) closed while `agy` was still running. Quit `agy` and
@@ -132,8 +136,8 @@ Delete it; the plugin will recreate it on the next project open.
 ### Steps
 
 ```bash
-git clone https://github.com/ematasar/antigravity-phpstorm.git
-cd antigravity-phpstorm
+git clone https://github.com/matasarei/antigravity-companion.git
+cd antigravity-companion
 ./gradlew buildPlugin
 ```
 
@@ -180,9 +184,10 @@ build.gradle.kts, gradle.properties, settings.gradle.kts
   mid-conversation; `agy` calls back over MCP when it decides it needs IDE
   state.
 - **Multi-project.** Each open project registers a separate
-  `phpstorm-companion-<hash>` entry. A running `agy` in workspace A will also
-  see workspace B's tools in its catalog; only the live project's bridge
-  succeeds, but the duplicate tool names can confuse the model.
+  `jetbrains-companion-<productCode>-<projectHash>` entry. A running `agy` in
+  workspace A will also see workspace B's tools in its catalog; only the live
+  project's bridge succeeds, but the duplicate tool names can confuse the
+  model.
 
 ## License
 

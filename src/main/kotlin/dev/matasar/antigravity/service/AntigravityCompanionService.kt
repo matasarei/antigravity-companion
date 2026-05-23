@@ -6,6 +6,7 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
@@ -21,6 +22,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.LocalFileSystem
 import dev.matasar.antigravity.bridge.StdioBridge
+import org.jetbrains.plugins.terminal.TerminalTabState
+import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import dev.matasar.antigravity.settings.AntigravitySettings
 import dev.matasar.antigravity.settings.AntigravitySettingsConfigurable
 import kotlinx.coroutines.CoroutineScope
@@ -44,28 +47,61 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
+import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermission
+import java.util.concurrent.TimeUnit
 
 @Service(Service.Level.PROJECT)
 class AntigravityCompanionService(private val project: Project) : Disposable {
 
-    private val log = Logger.getInstance(AntigravityCompanionService::class.java)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val prettyJson = Json { prettyPrint = true }
 
     private val projectHash: String =
         Integer.toHexString((project.basePath ?: project.name).hashCode())
-    private val mcpEntryName = "phpstorm-companion-$projectHash"
+    // Product code (IU/IC/PS/WS/PY/GO/RR/...) is folded in so opening the same project in two
+    // JetBrains IDEs at once doesn't have them stomp each other's mcp_config.json entry.
+    private val productCode: String =
+        try {
+            // Locale.ROOT — in Turkish locale, default lowercase turns "IU" into "ıu" (dotless
+            // i), which would silently change the entry name and break collision-avoidance and
+            // legacy-sweep logic across sessions/IDEs run under different locales.
+            ApplicationInfo.getInstance().build.productCode
+                .lowercase(java.util.Locale.ROOT)
+                .ifBlank { "ide" }
+        } catch (_: Exception) {
+            "ide"
+        }
+    private val mcpEntryName = "jetbrains-companion-$productCode-$projectHash"
 
+    // Keys this project used to register under, before the entry-name format included a product
+    // code. Swept on every register/unregister so upgraders don't accumulate orphans in
+    // mcp_config.json. Cross-product entries (`jetbrains-companion-<otherProductCode>-...`)
+    // belong to other JetBrains IDEs running the plugin and are deliberately NOT swept.
+    private val legacyMcpEntryNames: Set<String> = setOf(
+        "phpstorm-companion-$projectHash",
+        "jetbrains-companion-$projectHash",
+    )
+
+    @Volatile
     var port: Int = 0
         private set
 
-    private var serverSocket: ServerSocket? = null
-    private var bridgeScript: File? = null
+    @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var bridgeScript: File? = null
+    // Why setup didn't finish (set by whichever init step failed). Read on the EDT when the
+    // user clicks the toolbar, so the message reflects the actual failure mode (bind vs
+    // script write vs whatever) instead of a hard-coded guess.
+    @Volatile private var initFailureReason: String? = null
     private var lastSpawnTime: Long = 0
 
     init {
@@ -96,14 +132,13 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         lastSpawnTime = now
 
         if (bridgeScript == null) {
-            NotificationGroupManager.getInstance()
-                .getNotificationGroup("Antigravity Companion")
-                .createNotification(
-                    "Antigravity Companion failed to initialise",
-                    "The MCP bridge script could not be written when this project opened. See idea.log and restart the project.",
-                    NotificationType.ERROR,
-                )
-                .notify(project)
+            val detail = initFailureReason
+                ?: "Setup did not complete when this project opened."
+            notify(
+                title = "Antigravity Companion failed to initialise",
+                body = "$detail See idea.log and reopen the project to retry.",
+                type = NotificationType.ERROR,
+            )
             return
         }
 
@@ -116,7 +151,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
         ApplicationManager.getApplication().invokeLater {
             try {
-                val tm = org.jetbrains.plugins.terminal.TerminalToolWindowManager.getInstance(project)
+                val tm = TerminalToolWindowManager.getInstance(project)
                 // Non-deprecated path: configure a TerminalTabState with the working dir, tab
                 // name, and the agy command, then hand it to the default terminal runner. We
                 // wrap the agy invocation in a login + interactive shell so PATH and other
@@ -125,7 +160,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 // launchd's sparse PATH, so tools like docker-compose / brew-installed binaries
                 // are invisible to agy and its child commands. `exec` replaces the shell with
                 // agy so there's no zombie shell process in the tree.
-                val tabState = org.jetbrains.plugins.terminal.TerminalTabState().apply {
+                val tabState = TerminalTabState().apply {
                     myTabName = "Antigravity"
                     myWorkingDirectory = project.basePath
                     myShellCommand = buildAgyInvocation(agyPath)
@@ -186,25 +221,81 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     private fun shellEscape(s: String): String =
         "'" + s.replace("'", "'\\''") + "'"
 
-    private fun notifySpawnFailure(e: Throwable) {
-        val group = NotificationGroupManager.getInstance()
+    /**
+     * Shared notification factory — every user-facing balloon goes through here so the
+     * "Antigravity Companion" notification group, project routing, and basic structure stay
+     * consistent. Caller-provided [configure] runs on the [Notification] before it's posted
+     * (e.g. to attach actions).
+     */
+    private fun notify(
+        title: String,
+        body: String,
+        type: NotificationType,
+        configure: (Notification.() -> Unit)? = null,
+    ) {
+        val notification = NotificationGroupManager.getInstance()
             .getNotificationGroup("Antigravity Companion")
-        group.createNotification(
-            "Could not open Antigravity terminal",
-            "${e.javaClass.simpleName}: ${e.message ?: "(no message)"} — see idea.log for the stack trace.",
-            NotificationType.ERROR,
-        ).notify(project)
+            .createNotification(title, body, type)
+        configure?.invoke(notification)
+        notification.notify(project)
     }
 
-    private fun notifyMissingAgy() {
-        val group = NotificationGroupManager.getInstance()
-            .getNotificationGroup("Antigravity Companion")
-        val notification = group.createNotification(
-            "agy executable not found",
-            "Set the path to the agy CLI in Settings → Tools → Antigravity Companion.",
-            NotificationType.WARNING,
-        )
-        notification.addAction(object : NotificationAction("Configure…") {
+    private fun notifySpawnFailure(e: Throwable) = notify(
+        title = "Could not open Antigravity terminal",
+        body = "${e.javaClass.simpleName}: ${e.message ?: "(no message)"} — see idea.log for the stack trace.",
+        type = NotificationType.ERROR,
+    )
+
+    private fun notifyMcpConfigLockUnavailable() = notify(
+        title = "Antigravity Companion could not register MCP server",
+        body = """
+            Could not acquire a file lock on ${mcpConfigLockFile().absolutePath} — locking may be
+            unsupported on this filesystem (some network mounts, FUSE adapters), or the lock file
+            is unreadable due to permissions.
+            See idea.log for details.
+        """.trimIndent(),
+        type = NotificationType.WARNING,
+    )
+
+    private fun notifyMcpConfigLockTimeout() = notify(
+        title = "Antigravity Companion could not register MCP server",
+        body = """
+            Timed out after ${LOCK_TIMEOUT_MS}ms waiting for the file lock at
+            ${mcpConfigLockFile().absolutePath} (held during updates to
+            ${mcpConfigFile().absolutePath}). Another process may be holding it, or the
+            filesystem is slow.
+            Close any other JetBrains IDE running this plugin and reopen the project to retry.
+            See idea.log for details.
+        """.trimIndent(),
+        type = NotificationType.WARNING,
+    )
+
+    private fun notifyMcpConfigWriteFailed() = notify(
+        title = "Antigravity Companion could not write MCP config",
+        body = """
+            Writing ${mcpConfigFile().absolutePath} failed, so agy won't see this IDE.
+            Check file permissions and disk space; see idea.log for the I/O error.
+        """.trimIndent(),
+        type = NotificationType.ERROR,
+    )
+
+    private fun notifyMcpConfigUnreadable() = notify(
+        title = "Antigravity Companion could not register MCP server",
+        body = """
+            ${mcpConfigFile().absolutePath} can't be safely updated — it's unreadable, not a JSON
+            object, or its `mcpServers` field is something other than an object.
+            Fix the file (or delete it — the plugin will recreate it) and reopen the project.
+            See idea.log for details.
+        """.trimIndent(),
+        type = NotificationType.WARNING,
+    )
+
+    private fun notifyMissingAgy() = notify(
+        title = "agy executable not found",
+        body = "Set the path to the agy CLI in Settings → Tools → Antigravity Companion.",
+        type = NotificationType.WARNING,
+    ) {
+        addAction(object : NotificationAction("Configure…") {
             override fun actionPerformed(e: AnActionEvent, n: Notification) {
                 ShowSettingsUtil.getInstance().showSettingsDialog(
                     project, AntigravitySettingsConfigurable::class.java,
@@ -212,7 +303,6 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 n.expire()
             }
         })
-        notification.notify(project)
     }
 
 
@@ -238,6 +328,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             }
         } catch (e: Exception) {
             log.error("Failed to start MCP server", e)
+            initFailureReason = "Could not start the MCP server on a local port (${e.javaClass.simpleName})."
         }
     }
 
@@ -315,7 +406,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 "initialize" -> ok(buildJsonObject {
                     put("protocolVersion", "2024-11-05")
                     put("serverInfo", buildJsonObject {
-                        put("name", "Antigravity Companion (PhpStorm)")
+                        put("name", "Antigravity JetBrains Companion")
                         put("version", PLUGIN_VERSION)
                     })
                     put("capabilities", buildJsonObject {
@@ -387,7 +478,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 NOT need to call a separate read_file tool afterwards for the same file in the same
                 turn.
 
-                If this tool returns "No active editor in PhpStorm right now.", the user has no file
+                If this tool returns "No active editor in the IDE right now.", the user has no file
                 focused — only then should you ask them which file/snippet they mean.
             """.trimIndent(),
         ),
@@ -418,7 +509,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                   - "fix the warnings" / "clean up this file"
 
                 The IDE's diagnostics are usually faster and more accurate than re-running tooling
-                from the shell, and they cover inspections specific to JetBrains (e.g. PhpStorm's
+                from the shell, and they cover inspections specific to JetBrains (e.g. IntelliJ's
                 type inference) that command-line tools miss.
 
                 If file_path is omitted, the active editor is used. To inspect a different file, pass
@@ -523,7 +614,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private fun readActiveEditor(): String = read {
         val editor = FileEditorManager.getInstance(project).selectedTextEditor
-            ?: return@read "No active editor in PhpStorm right now."
+            ?: return@read "No active editor in the IDE right now."
         val doc = editor.document
         val file = FileDocumentManager.getInstance().getFile(doc)
         val path = file?.path ?: "(unsaved buffer)"
@@ -557,7 +648,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private fun readOpenFiles(): String = read {
         val files = FileEditorManager.getInstance(project).openFiles.map { it.path }
-        if (files.isEmpty()) "No files are open in PhpStorm."
+        if (files.isEmpty()) "No files are open in the IDE."
         else files.joinToString("\n")
     }
 
@@ -634,10 +725,22 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     private fun writeBridgeScript() {
+        // If the MCP server failed to bind, port is still 0; writing a bridge script (and
+        // registering it in mcp_config.json) would point agy at a dead socket. Skip the rest of
+        // setup and rely on the toolbar action's "failed to initialise" notification to surface
+        // the failure when the user tries to start a session.
+        if (port <= 0) {
+            log.warn("Skipping bridge script write: MCP server didn't bind a port")
+            // Preserve any earlier reason (e.g. set by startMcpServer's catch) so the toolbar
+            // notification reports the root cause rather than this downstream symptom.
+            if (initFailureReason == null) {
+                initFailureReason = "The MCP server didn't bind to a local port."
+            }
+            return
+        }
         val isWindows = AntigravitySettings.isWindows()
         val ext = if (isWindows) "bat" else "sh"
-        val script = File(antigravityDir(), "phpstorm-mcp-bridge-$projectHash.$ext")
-        bridgeScript = script
+        val script = File(antigravityDir(), "jetbrains-mcp-bridge-$productCode-$projectHash.$ext")
 
         val java = resolveJavaExecutable().absolutePath
         val classpath = resolveBridgeClasspath().absolutePath
@@ -645,6 +748,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         val contents = if (isWindows) windowsScript(java, classpath, port)
         else unixScript(java, classpath, port)
 
+        // Only publish bridgeScript and sweep legacy files after the new script lands on disk
+        // successfully. Otherwise registerInMcpConfig() would point agy at a missing/partial
+        // file and triggerNewTerminalSession() wouldn't fire its "failed to initialise"
+        // notification (which checks for `bridgeScript == null`).
         try {
             script.writeText(contents)
             if (!isWindows) {
@@ -661,9 +768,47 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                     // Non-POSIX FS — best effort.
                 }
             }
+            bridgeScript = script
+            deleteLegacyBridgeScripts(script)
             log.info("Wrote MCP bridge script: ${script.absolutePath}")
         } catch (e: IOException) {
             log.error("Failed to write MCP bridge script", e)
+            initFailureReason = "The MCP bridge script could not be written (${e.javaClass.simpleName})."
+            // Best-effort: remove any partial file writeText left behind, so the user doesn't
+            // end up with a corrupt `jetbrains-mcp-bridge-...` sitting in ~/.gemini/ that
+            // someone might invoke from outside the IDE.
+            try {
+                if (script.exists() && !script.delete()) {
+                    log.debug("Could not delete partial bridge script ${script.absolutePath}")
+                }
+            } catch (e2: Exception) {
+                log.debug("Cleanup of partial bridge script ${script.absolutePath} failed", e2)
+            }
+        }
+    }
+
+    /**
+     * Removes bridge scripts written by older plugin versions for this project (formats that
+     * predate the productCode being folded into the filename). Best-effort; failures are
+     * logged at debug — a leftover .sh in `~/.gemini/antigravity-cli/` is harmless beyond
+     * looking untidy.
+     */
+    private fun deleteLegacyBridgeScripts(currentScript: File) {
+        val dir = antigravityDir()
+        val legacyNames = listOf(
+            "phpstorm-mcp-bridge-$projectHash.sh",
+            "phpstorm-mcp-bridge-$projectHash.bat",
+            "jetbrains-mcp-bridge-$projectHash.sh",
+            "jetbrains-mcp-bridge-$projectHash.bat",
+        )
+        for (name in legacyNames) {
+            val f = File(dir, name)
+            if (!f.exists() || f == currentScript) continue
+            try {
+                if (f.delete()) log.info("Removed legacy bridge script ${f.name}")
+            } catch (e: Exception) {
+                log.debug("Could not remove legacy bridge script ${f.name}", e)
+            }
         }
     }
 
@@ -691,80 +836,304 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         return File(dir, "mcp_config.json")
     }
 
-    private fun readExistingMcpConfig(): JsonObject {
-        val cfg = mcpConfigFile()
-        if (!cfg.exists()) return JsonObject(emptyMap())
-        val text = try { cfg.readText() } catch (e: IOException) {
-            log.warn("Could not read mcp_config.json: ${e.message}")
-            return JsonObject(emptyMap())
-        }
-        if (text.isBlank()) return JsonObject(emptyMap())
-        return try {
-            (Json.parseToJsonElement(text) as? JsonObject) ?: JsonObject(emptyMap())
-        } catch (e: Exception) {
-            log.warn("mcp_config.json is not a JSON object, overwriting: ${e.message}")
-            JsonObject(emptyMap())
+    private fun mcpConfigLockFile(): File = File(mcpConfigFile().parentFile, "mcp_config.json.lock")
+
+    /**
+     * Outcome of [withMcpConfigLock]. Distinguishing TIMEOUT (recoverable contention) from
+     * UNAVAILABLE (filesystem doesn't support locking / I/O denied) lets the caller surface a
+     * notification that names the actual problem.
+     */
+    private enum class LockOutcome { SUCCESS, TIMEOUT, UNAVAILABLE }
+
+    /**
+     * Internal projection of a single [tryAcquireLockWithBackoff] result before it's collapsed
+     * into the public [LockOutcome].
+     */
+    private sealed class LockAttempt {
+        data class Acquired(val lock: FileLock) : LockAttempt()
+        object TimedOut : LockAttempt()
+        object Unavailable : LockAttempt()
+    }
+
+    /**
+     * Serialises read-modify-write access to `mcp_config.json` across all processes (multiple
+     * JetBrains IDEs running this plugin concurrently) AND within a single process (multiple
+     * open projects in the same IDE — each has its own AntigravityCompanionService instance).
+     *
+     * Two layers:
+     * - `synchronized(IN_PROCESS_MCP_LOCK)` keeps the JVM-side ordering single-file. Without
+     *   it, two services in the same IDE would each open their own FileChannel and the second
+     *   `FileChannel.lock()` would throw `OverlappingFileLockException` (the JDK considers
+     *   same-JVM lock requests on the same file as overlapping regardless of which channel
+     *   they came from).
+     * - `FileChannel.tryLock()` with exponential backoff on a sibling `.lock` file handles
+     *   cross-process serialisation. Bounded by [timeoutMs] (default [LOCK_TIMEOUT_MS] for
+     *   register-time calls; [SHUTDOWN_LOCK_TIMEOUT_MS] for dispose) so a wedged sibling
+     *   process or a slow/remote filesystem can't block project startup or shutdown
+     *   indefinitely. The lock is advisory but every writer goes through this helper, so the
+     *   convention is enough; the lock is released when the channel closes, and the OS also
+     *   releases it on process crash — no zombie locks survive a kill.
+     *
+     * Returns a [LockOutcome]:
+     * - [LockOutcome.SUCCESS] — the block ran while the lock was held. Sub-failures inside the
+     *   block (read parse / write IO) surface their own notifications and are independent of
+     *   this outcome.
+     * - [LockOutcome.TIMEOUT] — we waited [timeoutMs]ms and never got the lock; likely
+     *   contention with another IDE process.
+     * - [LockOutcome.UNAVAILABLE] — we couldn't open the lock file, or `tryLock` reported the
+     *   filesystem/OS doesn't support locking. Distinct from TIMEOUT because the user
+     *   remediation is different (fix permissions / move config off a non-locking FS).
+     *
+     * Exceptions thrown by `block()` itself are NOT caught here; they propagate so the caller's
+     * own `try`/`catch` (or `runStep` wrapper) can log them with an accurate label rather than
+     * being masked as a lock failure.
+     */
+    private inline fun withMcpConfigLock(
+        timeoutMs: Long = LOCK_TIMEOUT_MS,
+        block: () -> Unit,
+    ): LockOutcome {
+        val lockFile = mcpConfigLockFile()
+        synchronized(IN_PROCESS_MCP_LOCK) {
+            // Narrowly scope the IO catch to lock-file open: any exception thrown later by
+            // `block()` (during read/merge/write) should propagate to the caller so its own
+            // try/catch (or the outer runStep wrapper) logs it with an accurate label, instead
+            // of being masked as "could not acquire lock".
+            val raf = try {
+                RandomAccessFile(lockFile, "rw")
+            } catch (e: IOException) {
+                log.warn("Could not open mcp_config.json lock file: ${e.message}", e)
+                return LockOutcome.UNAVAILABLE
+            }
+            raf.use {
+                return when (val attempt = tryAcquireLockWithBackoff(raf.channel, timeoutMs)) {
+                    is LockAttempt.Acquired -> {
+                        attempt.lock.use { block() }
+                        LockOutcome.SUCCESS
+                    }
+                    LockAttempt.TimedOut -> {
+                        log.warn("Timed out waiting ${timeoutMs}ms for mcp_config.json lock")
+                        LockOutcome.TIMEOUT
+                    }
+                    LockAttempt.Unavailable -> LockOutcome.UNAVAILABLE
+                }
+            }
         }
     }
 
-    private fun writeMergedMcpConfig(updated: JsonObject) {
+    /**
+     * tryLock loop with exponential backoff. Returns:
+     * - [LockAttempt.Acquired] on success — caller is responsible for closing the lock.
+     * - [LockAttempt.TimedOut] when we exhausted [timeoutMs] of polling without success.
+     *   Callers pass [LOCK_TIMEOUT_MS] for register-time work and [SHUTDOWN_LOCK_TIMEOUT_MS]
+     *   for dispose() so shutdown isn't held up by contention.
+     * - [LockAttempt.Unavailable] for non-timeout failures: filesystem doesn't support locking
+     *   (`IOException`), an unexpected same-JVM overlap was reported, or the thread was
+     *   interrupted while sleeping.
+     */
+    private fun tryAcquireLockWithBackoff(channel: FileChannel, timeoutMs: Long): LockAttempt {
+        // Use System.nanoTime() (monotonic) rather than currentTimeMillis (wall clock).
+        // Otherwise an NTP sync or manual clock change during the loop could make us wait far
+        // longer than timeoutMs, or time out instantly.
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        var backoff = LOCK_INITIAL_BACKOFF_MS
+        while (true) {
+            try {
+                val lock = channel.tryLock()
+                if (lock != null) return LockAttempt.Acquired(lock)
+            } catch (e: OverlappingFileLockException) {
+                // Shouldn't happen inside synchronized(IN_PROCESS_MCP_LOCK) but be defensive.
+                log.warn("Unexpected OverlappingFileLockException despite in-process sync", e)
+                return LockAttempt.Unavailable
+            } catch (e: IOException) {
+                // tryLock can throw IOException when the FS/OS rejects locking (some network
+                // mounts, certain FUSE adapters, permission issues on the lock file). Treat as
+                // a hard "lock unavailable" — distinct from a true timeout.
+                log.warn("File locking unavailable for mcp_config.json: ${e.message}", e)
+                return LockAttempt.Unavailable
+            }
+            val remainingNanos = deadlineNanos - System.nanoTime()
+            if (remainingNanos <= 0) return LockAttempt.TimedOut
+            val remainingMs = TimeUnit.NANOSECONDS.toMillis(remainingNanos).coerceAtLeast(1)
+            try {
+                Thread.sleep(backoff.coerceAtMost(remainingMs))
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return LockAttempt.Unavailable
+            }
+            backoff = (backoff * 2).coerceAtMost(LOCK_MAX_BACKOFF_MS)
+        }
+    }
+
+    private fun readExistingMcpConfig(): JsonObject? {
         val cfg = mcpConfigFile()
-        try {
-            cfg.writeText(prettyJson.encodeToString(JsonObject.serializer(), updated))
-        } catch (e: IOException) {
+        if (!cfg.exists()) return JsonObject(emptyMap())
+        val text = try { cfg.readText() } catch (e: IOException) {
+            log.warn("Could not read mcp_config.json: ${e.message}", e)
+            return null
+        }
+        if (text.isBlank()) return JsonObject(emptyMap())
+        val parsed = try {
+            val element = Json.parseToJsonElement(text)
+            if (element !is JsonObject) {
+                log.warn("mcp_config.json is not a JSON object, it is a ${element::class.simpleName}")
+                return null
+            }
+            element
+        } catch (e: Exception) {
+            log.warn("mcp_config.json parsing failed: ${e.message}", e)
+            return null
+        }
+        // The merge logic below only handles `mcpServers` being absent or a JsonObject. If the
+        // user has put something else there (an array, a string, …) we must not silently
+        // overwrite it — bail and let the notify path tell them to fix the file.
+        val mcpServers = parsed["mcpServers"]
+        if (mcpServers != null && mcpServers !is JsonObject) {
+            log.warn(
+                "mcp_config.json's `mcpServers` is not a JSON object " +
+                    "(it is ${mcpServers::class.simpleName}); refusing to overwrite",
+            )
+            return null
+        }
+        return parsed
+    }
+
+    private fun writeMergedMcpConfig(updated: JsonObject): Boolean {
+        val cfg = mcpConfigFile()
+        // Write to a sibling temp file then atomic-move into place, so a kill mid-write can
+        // never leave a half-written `mcp_config.json` behind. Temp filename is uniqued by PID
+        // + nanoTime so two IDE processes can't pick the same tmp path while one of them is
+        // (rarely) writing without the lock held.
+        val pid = try { ProcessHandle.current().pid() } catch (_: Exception) { 0L }
+        val tmp = File(cfg.parentFile, "mcp_config.json.tmp.$pid.${System.nanoTime()}")
+        return try {
+            tmp.writeText(prettyJson.encodeToString(JsonObject.serializer(), updated))
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    cfg.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                // Some filesystems (certain network mounts, FUSE adapters) refuse ATOMIC_MOVE.
+                // Fall back to a plain replace — still safer than the original in-place
+                // writeText because the new content was fully written to the temp file before
+                // we touch the live config.
+                log.info("Filesystem doesn't support atomic moves for ${cfg.absolutePath}; using non-atomic replace")
+                Files.move(tmp.toPath(), cfg.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            true
+        } catch (e: Exception) {
             log.error("Failed to write mcp_config.json", e)
+            try { if (tmp.exists()) tmp.delete() } catch (e2: Exception) {
+                log.debug("Could not clean up mcp_config.json temp file ${tmp.name}", e2)
+            }
+            false
         }
     }
 
     private fun registerInMcpConfig() {
         val script = bridgeScript ?: return
-        val existing = readExistingMcpConfig()
-        val existingServers = (existing["mcpServers"] as? JsonObject) ?: JsonObject(emptyMap())
+        val outcome = withMcpConfigLock {
+            val existing = readExistingMcpConfig()
+            if (existing == null) {
+                notifyMcpConfigUnreadable()
+                return@withMcpConfigLock
+            }
+            val existingServers = (existing["mcpServers"] as? JsonObject) ?: JsonObject(emptyMap())
 
-        val updatedServers = buildJsonObject {
-            for ((k, v) in existingServers) put(k, v)
-            put(mcpEntryName, buildJsonObject {
-                put("command", script.absolutePath)
-                put("args", JsonArray(emptyList()))
-            })
+            val updatedServers = buildJsonObject {
+                for ((k, v) in existingServers) {
+                    if (k in legacyMcpEntryNames) {
+                        log.info("Cleaning legacy MCP entry '$k' from mcp_config.json")
+                        continue
+                    }
+                    put(k, v)
+                }
+                put(mcpEntryName, buildJsonObject {
+                    put("command", script.absolutePath)
+                    put("args", JsonArray(emptyList()))
+                })
+            }
+            val merged = buildJsonObject {
+                for ((k, v) in existing) if (k != "mcpServers") put(k, v)
+                put("mcpServers", updatedServers)
+            }
+            if (!writeMergedMcpConfig(merged)) {
+                notifyMcpConfigWriteFailed()
+                return@withMcpConfigLock
+            }
+            log.info("Registered MCP entry '$mcpEntryName' -> ${script.absolutePath}")
         }
-        val merged = buildJsonObject {
-            for ((k, v) in existing) if (k != "mcpServers") put(k, v)
-            put("mcpServers", updatedServers)
+        when (outcome) {
+            LockOutcome.SUCCESS -> { /* inner block already surfaced any sub-failures */ }
+            LockOutcome.TIMEOUT -> notifyMcpConfigLockTimeout()
+            LockOutcome.UNAVAILABLE -> notifyMcpConfigLockUnavailable()
         }
-        writeMergedMcpConfig(merged)
-        log.info("Registered MCP entry '$mcpEntryName' -> ${script.absolutePath}")
     }
 
     private fun unregisterFromMcpConfig() {
-        val existing = readExistingMcpConfig()
-        val servers = (existing["mcpServers"] as? JsonObject) ?: return
-        if (!servers.containsKey(mcpEntryName)) return
-        val updatedServers = buildJsonObject {
-            for ((k, v) in servers) if (k != mcpEntryName) put(k, v)
+        // Best-effort at teardown: short timeout so dispose() isn't held up under contention,
+        // and skip silently on any non-success outcome (no point popping a notification on
+        // project close). A stale entry left here is harmless — the next time this same
+        // (IDE, project) opens, register overwrites our key with fresh content.
+        withMcpConfigLock(timeoutMs = SHUTDOWN_LOCK_TIMEOUT_MS) {
+            val existing = readExistingMcpConfig() ?: return@withMcpConfigLock
+            val servers = (existing["mcpServers"] as? JsonObject) ?: return@withMcpConfigLock
+            // Remove the current key AND any legacy keys this project may have left behind in
+            // earlier plugin versions — same logic as register, but applied at teardown.
+            val keysToRemove = legacyMcpEntryNames + mcpEntryName
+            if (servers.keys.none { it in keysToRemove }) return@withMcpConfigLock
+            val updatedServers = buildJsonObject {
+                for ((k, v) in servers) if (k !in keysToRemove) put(k, v)
+            }
+            val merged = buildJsonObject {
+                for ((k, v) in existing) if (k != "mcpServers") put(k, v)
+                put("mcpServers", updatedServers)
+            }
+            if (writeMergedMcpConfig(merged)) {
+                log.info("Removed MCP entry '$mcpEntryName' from mcp_config.json")
+            }
         }
-        val merged = buildJsonObject {
-            for ((k, v) in existing) if (k != "mcpServers") put(k, v)
-            put("mcpServers", updatedServers)
-        }
-        writeMergedMcpConfig(merged)
-        log.info("Removed MCP entry '$mcpEntryName' from mcp_config.json")
     }
 
     // ---------------------------------------------------------------- Lifecycle
 
     override fun dispose() {
         log.info("Disposing AntigravityCompanionService for project $projectHash")
-        try { serverSocket?.close() } catch (_: Exception) { /* ignore */ }
-        try { scope.cancel() } catch (_: Exception) { /* ignore */ }
+        try { serverSocket?.close() } catch (e: Exception) { log.debug("serverSocket.close() failed during dispose", e) }
+        try { scope.cancel() } catch (e: Exception) { log.debug("scope.cancel() failed during dispose", e) }
         try { unregisterFromMcpConfig() } catch (e: Exception) {
             log.warn("Failed to unregister from mcp_config.json", e)
         }
-        try { bridgeScript?.takeIf { it.exists() }?.delete() } catch (_: Exception) { /* ignore */ }
+        try {
+            bridgeScript?.takeIf { it.exists() }?.delete()
+        } catch (e: Exception) {
+            log.debug("bridgeScript delete failed during dispose", e)
+        }
     }
 
     companion object {
-        const val PLUGIN_VERSION: String = "1.1.0"
+        private val log = Logger.getInstance(AntigravityCompanionService::class.java)
+
+        /**
+         * Process-wide guard for mcp_config.json mutations. See [withMcpConfigLock] for why we
+         * can't rely on `FileChannel.lock()` alone within a single JVM.
+         */
+        private val IN_PROCESS_MCP_LOCK = Any()
+
+        // Total deadline for acquiring the cross-process mcp_config.json file lock. Bounded so
+        // a wedged sibling IDE or a slow remote FS can't block project startup indefinitely.
+        // A healthy critical section is ~10ms, so 5s is generous.
+        private const val LOCK_TIMEOUT_MS = 5_000L
+        // Much tighter budget for dispose() — we'd rather leave a stale entry to be cleaned up
+        // by the next project's register sweep than delay shutdown waiting on a contended FS
+        // lock that may not free in time anyway.
+        private const val SHUTDOWN_LOCK_TIMEOUT_MS = 200L
+        private const val LOCK_INITIAL_BACKOFF_MS = 25L
+        private const val LOCK_MAX_BACKOFF_MS = 500L
+
+        const val PLUGIN_VERSION: String = "1.2.0"
 
         /**
          * Sent as the `instructions` field on the MCP `initialize` response. Clients SHOULD
@@ -773,10 +1142,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
          * so it must be assertive — descriptions on individual tools are not always enough.
          */
         private val SERVER_INSTRUCTIONS: String = """
-            This MCP server exposes live state from the user's JetBrains IDE (PhpStorm, IntelliJ
-            IDEA, WebStorm, GoLand, etc.). The user is editing code in that IDE while talking to
-            you. Treat the IDE as the authoritative source of "what the user is looking at right
-            now".
+            This MCP server exposes live state from the user's JetBrains IDE (IntelliJ IDEA,
+            PhpStorm, WebStorm, PyCharm, GoLand, etc.). The user is editing code in that IDE
+            while talking to you. Treat the IDE as the authoritative source of "what the user is
+            looking at right now".
 
             Behavior rules (follow these strictly):
 
@@ -788,7 +1157,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                or clarify which snippet they mean. The IDE already knows.
 
             2. Only fall back to asking the user when `ide_get_active_editor` returns
-               "No active editor in PhpStorm right now." (meaning they truly have no file
+               "No active editor in the IDE right now." (meaning they truly have no file
                focused).
 
             3. The response from `ide_get_active_editor` already includes the full file content

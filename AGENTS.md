@@ -5,8 +5,9 @@ Guidance for coding agents (and humans) working on this repository.
 ## What this is
 
 A JetBrains plugin that bridges the [Antigravity](https://antigravity.google) CLI
-(`agy`) with IntelliJ-based IDEs (PhpStorm primarily, but anything 2023.2+)
-through the **Model Context Protocol (MCP)**.
+(`agy`) with IntelliJ-based IDEs (IntelliJ IDEA, PhpStorm, WebStorm, PyCharm,
+GoLand, RustRover, etc. — anything 2023.2+) through the **Model Context
+Protocol (MCP)**.
 
 - The plugin runs a local TCP MCP server inside the IDE process.
 - A tiny pure-Java stdio↔TCP relay (`StdioBridge`) is invoked from a
@@ -92,9 +93,13 @@ adding any of these, stop and re-read the principles below.
    (IDE, project) pair —
    `jetbrains-companion-<productCode>-<projectHash>` — so opening the same
    project in two JetBrains IDEs at once doesn't have them stomp each
-   other's entry. Sweep legacy formats (`phpstorm-companion-*`,
-   `jetbrains-companion-<projectHash>` without a productCode) on register so
-   upgraders don't accumulate orphans. Clean up our key in `dispose()`.
+   other's entry. On register/unregister, also clean up *this project's*
+   legacy keys from earlier plugin versions
+   (`phpstorm-companion-<projectHash>` and
+   `jetbrains-companion-<projectHash>` — i.e. matching the current
+   `projectHash`, no productCode). Do **not** touch other projects' legacy
+   entries — only this `Project`'s service knows its own hash. Clean up our
+   key in `dispose()`.
 
 7. **Keep the artifact small.** The IntelliJ Platform already ships
    kotlin-stdlib and most of what we need. Only `kotlinx-serialization-json`

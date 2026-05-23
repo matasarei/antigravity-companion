@@ -1,8 +1,9 @@
 # Antigravity Companion for JetBrains IDEs
 
 A JetBrains plugin that bridges the [Antigravity](https://antigravity.google) CLI
-(`agy`) with PhpStorm (and other IntelliJ-based IDEs) so the agent can see your
-active file, selection, open tabs, and inspection diagnostics on demand.
+(`agy`) with JetBrains IDEs (IntelliJ IDEA, PhpStorm, WebStorm, PyCharm, GoLand,
+and other IntelliJ-based IDEs) so the agent can see your active file, selection,
+open tabs, and inspection diagnostics on demand.
 
 ## Features
 
@@ -96,7 +97,7 @@ On project close it removes the config entry and deletes the bridge script.
 
 | Path | Purpose |
 | --- | --- |
-| `~/.gemini/config/mcp_config.json` | The plugin merges/removes its `jetbrains-companion-<productCode>-<projectHash>` entry here. Other entries are preserved. Stale `phpstorm-companion-*` keys from old plugin versions are swept on register. |
+| `~/.gemini/config/mcp_config.json` | The plugin merges/removes its `jetbrains-companion-<productCode>-<projectHash>` entry here. Other entries are preserved. On register, the plugin also removes any legacy keys for **this project's** `projectHash` (e.g. `phpstorm-companion-<projectHash>`) left behind by older plugin versions; legacy entries belonging to other projects are not touched. |
 | `~/.gemini/antigravity-cli/jetbrains-mcp-bridge-<productCode>-<projectHash>.{sh,bat}` | Auto-generated bridge script; deleted on project close. Do not edit by hand. |
 | `~/.gemini/antigravity-cli/cli.log` *(symlink to latest run)* | `agy`'s log — useful when MCP traffic looks wrong. |
 | IDE `idea.log` | Plugin logs. Look for `AntigravityCompanionService`: `MCP server listening on 127.0.0.1:<port>`, `MCP client connected from …`. |

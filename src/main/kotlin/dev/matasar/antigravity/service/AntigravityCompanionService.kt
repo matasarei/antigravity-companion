@@ -58,6 +58,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermission
+import java.util.concurrent.TimeUnit
 
 @Service(Service.Level.PROJECT)
 class AntigravityCompanionService(private val project: Project) : Disposable {
@@ -937,7 +938,10 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
      *   interrupted while sleeping.
      */
     private fun tryAcquireLockWithBackoff(channel: FileChannel, timeoutMs: Long): LockAttempt {
-        val deadline = System.currentTimeMillis() + timeoutMs
+        // Use System.nanoTime() (monotonic) rather than currentTimeMillis (wall clock).
+        // Otherwise an NTP sync or manual clock change during the loop could make us wait far
+        // longer than timeoutMs, or time out instantly.
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
         var backoff = LOCK_INITIAL_BACKOFF_MS
         while (true) {
             try {
@@ -954,10 +958,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 log.warn("File locking unavailable for mcp_config.json: ${e.message}", e)
                 return LockAttempt.Unavailable
             }
-            val remaining = deadline - System.currentTimeMillis()
-            if (remaining <= 0) return LockAttempt.TimedOut
+            val remainingNanos = deadlineNanos - System.nanoTime()
+            if (remainingNanos <= 0) return LockAttempt.TimedOut
+            val remainingMs = TimeUnit.NANOSECONDS.toMillis(remainingNanos).coerceAtLeast(1)
             try {
-                Thread.sleep(backoff.coerceAtMost(remaining))
+                Thread.sleep(backoff.coerceAtMost(remainingMs))
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return LockAttempt.Unavailable

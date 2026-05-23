@@ -844,26 +844,28 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
      */
     private inline fun withMcpConfigLock(block: () -> Unit): Boolean {
         val lockFile = mcpConfigLockFile()
-        return try {
-            var ran = false
-            synchronized(IN_PROCESS_MCP_LOCK) {
-                RandomAccessFile(lockFile, "rw").use { raf ->
-                    val lock = tryAcquireLockWithBackoff(raf.channel)
-                    if (lock != null) {
-                        lock.use {
-                            block()
-                            ran = true
-                        }
-                    }
+        synchronized(IN_PROCESS_MCP_LOCK) {
+            // Narrowly scope the IO catch to lock-file open: any exception thrown later by
+            // `block()` (during read/merge/write) should propagate to the caller so its own
+            // try/catch (or the outer runStep wrapper) logs it with an accurate label, instead
+            // of being masked as "could not acquire lock".
+            val raf = try {
+                RandomAccessFile(lockFile, "rw")
+            } catch (e: IOException) {
+                log.warn("Could not open mcp_config.json lock file: ${e.message}", e)
+                return false
+            }
+            raf.use {
+                val lock = tryAcquireLockWithBackoff(raf.channel)
+                if (lock == null) {
+                    log.warn("Timed out waiting ${LOCK_TIMEOUT_MS}ms for mcp_config.json lock")
+                    return false
                 }
+                lock.use {
+                    block()
+                }
+                return true
             }
-            if (!ran) {
-                log.warn("Timed out waiting ${LOCK_TIMEOUT_MS}ms for mcp_config.json lock")
-            }
-            ran
-        } catch (e: Exception) {
-            log.warn("Could not acquire mcp_config.json lock: ${e.message}", e)
-            false
         }
     }
 

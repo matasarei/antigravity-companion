@@ -251,14 +251,16 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     private fun notifyMcpConfigLockTimeout() {
-        val path = mcpConfigFile().absolutePath
+        val lockPath = mcpConfigLockFile().absolutePath
+        val configPath = mcpConfigFile().absolutePath
         val group = NotificationGroupManager.getInstance()
             .getNotificationGroup("Antigravity Companion")
         group.createNotification(
             "Antigravity Companion could not register MCP server",
             """
-                Timed out after ${LOCK_TIMEOUT_MS}ms waiting for exclusive access to $path —
-                another process may be holding the lock, or the filesystem is slow.
+                Timed out after ${LOCK_TIMEOUT_MS}ms waiting for the file lock at $lockPath
+                (held during updates to $configPath). Another process may be holding it, or
+                the filesystem is slow.
                 Close any other JetBrains IDE running this plugin and reopen the project to retry.
                 See idea.log for details.
             """.trimIndent(),

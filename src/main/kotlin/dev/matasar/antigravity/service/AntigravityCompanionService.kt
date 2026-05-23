@@ -196,6 +196,19 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         ).notify(project)
     }
 
+    private fun notifyMcpConfigUnreadable() {
+        val path = mcpConfigFile().absolutePath
+        val group = NotificationGroupManager.getInstance()
+            .getNotificationGroup("Antigravity Companion")
+        group.createNotification(
+            "Antigravity Companion could not register MCP server",
+            "$path is unreadable or not a valid JSON object, so agy won't see this IDE. " +
+                "Fix the file (or delete it — the plugin will recreate it) and reopen the project. " +
+                "See idea.log for the parse error.",
+            NotificationType.WARNING,
+        ).notify(project)
+    }
+
     private fun notifyMissingAgy() {
         val group = NotificationGroupManager.getInstance()
             .getNotificationGroup("Antigravity Companion")
@@ -723,7 +736,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
 
     private fun registerInMcpConfig() {
         val script = bridgeScript ?: return
-        val existing = readExistingMcpConfig() ?: return
+        val existing = readExistingMcpConfig()
+        if (existing == null) {
+            notifyMcpConfigUnreadable()
+            return
+        }
         val existingServers = (existing["mcpServers"] as? JsonObject) ?: JsonObject(emptyMap())
 
         val updatedServers = buildJsonObject {

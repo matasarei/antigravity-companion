@@ -1,9 +1,11 @@
 package dev.matasar.antigravity.settings
 
+import com.intellij.ide.DataManager
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.keymap.KeymapUtil
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.ShowSettingsUtil
+import com.intellij.openapi.options.ex.Settings
 import com.intellij.openapi.ui.TextBrowseFolderListener
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.HyperlinkLabel
@@ -69,22 +71,37 @@ class AntigravitySettingsConfigurable : Configurable {
         // shortcut (no chord is safe across all bundled keymaps — Default, Eclipse, VS, Mac,
         // Emacs, etc. — and a silently overridden user binding is worse than no binding). The
         // hyperlink below opens Settings → Keymap so the user can pick their own.
+        // The label is kept in sync via reset(): the Settings dialog calls Configurable.reset()
+        // whenever this panel becomes the visible one — including after the user navigates
+        // back from the in-dialog Keymap, where they may have rebound the action. The Keymap
+        // configurable updates the live KeymapManager immediately on edit (Apply/Cancel just
+        // commits or rolls back), so reading via KeymapUtil in reset() reflects current state.
         val shortcutValue = JBLabel(currentShortcutText())
         shortcutValueLabel = shortcutValue
 
-        val keymapLink = HyperlinkLabel("Configure shortcut in Keymap settings…").apply {
-            addHyperlinkListener(HyperlinkListener { event ->
-                if (event.eventType == HyperlinkEvent.EventType.ACTIVATED) {
-                    // Opens the top-level Keymap configurable; the user searches for
-                    // "Open Antigravity CLI" or our action ID to find the entry.
-                    ShowSettingsUtil.getInstance().showSettingsDialog(null, "preferences.keymap")
-                    // Refresh the displayed shortcut after the user returns. The settings
-                    // dialog is modal, so by the time we reach this line it has closed and
-                    // any keymap edits are already applied.
-                    shortcutValueLabel?.text = currentShortcutText()
+        val keymapLink = HyperlinkLabel("Configure shortcut in Keymap settings…")
+        keymapLink.addHyperlinkListener(HyperlinkListener { event ->
+            if (event.eventType != HyperlinkEvent.EventType.ACTIVATED) return@HyperlinkListener
+            // When this configurable is shown inside the Settings dialog (the usual case), the
+            // `Settings` instance is available via DataContext. Navigate within the dialog
+            // instead of opening a second one. We deliberately do NOT pre-filter via
+            // select(configurable, option): the option is applied as a search query that
+            // collapses Keymap to whichever group matches (e.g. "Other") without selecting the
+            // actual row, which is more confusing than helpful. Land on Keymap at its top
+            // level and let the user use the inline tip below to search.
+            val ctx = DataManager.getInstance().getDataContext(keymapLink)
+            val settingsDialog = Settings.KEY.getData(ctx)
+            if (settingsDialog != null) {
+                val keymapConfigurable = settingsDialog.find(KEYMAP_CONFIGURABLE_ID)
+                if (keymapConfigurable != null) {
+                    settingsDialog.select(keymapConfigurable)
+                    return@HyperlinkListener
                 }
-            })
-        }
+            }
+            // Fallback: somehow invoked outside the Settings dialog. Open a fresh one.
+            ShowSettingsUtil.getInstance().showSettingsDialog(null, KEYMAP_CONFIGURABLE_ID)
+            shortcutValueLabel?.text = currentShortcutText()
+        })
 
         val shortcutHint = JBLabel(
             "Tip: search for \"Open Antigravity CLI\" in the Keymap dialog."
@@ -141,5 +158,12 @@ class AntigravitySettingsConfigurable : Configurable {
     private fun currentShortcutText(): String {
         val text = KeymapUtil.getFirstKeyboardShortcutText(StartSessionAction.ACTION_ID)
         return text.ifBlank { "Not set" }
+    }
+
+    companion object {
+        // Stable ID of the Keymap configurable (registered by the platform in plugin.xml since
+        // very old IDE versions). Used both for in-dialog navigation and as the fallback target
+        // when opening a fresh Settings dialog.
+        private const val KEYMAP_CONFIGURABLE_ID: String = "preferences.keymap"
     }
 }

@@ -79,14 +79,17 @@ class AntigravitySettingsConfigurable : Configurable {
             if (event.eventType != HyperlinkEvent.EventType.ACTIVATED) return@HyperlinkListener
             // When this configurable is shown inside the Settings dialog (the usual case), the
             // `Settings` instance is available via DataContext. Navigate within the dialog
-            // instead of opening a second one. Pre-filter Keymap by the action's display name
-            // so the user lands directly on the row to bind.
+            // instead of opening a second one. We deliberately do NOT pre-filter via
+            // select(configurable, option): the option is applied as a search query that
+            // collapses Keymap to whichever group matches (e.g. "Other") without selecting the
+            // actual row, which is more confusing than helpful. Land on Keymap at its top
+            // level and let the user use the inline tip below to search.
             val ctx = DataManager.getInstance().getDataContext(keymapLink)
             val settingsDialog = Settings.KEY.getData(ctx)
             if (settingsDialog != null) {
                 val keymapConfigurable = settingsDialog.find(KEYMAP_CONFIGURABLE_ID)
                 if (keymapConfigurable != null) {
-                    settingsDialog.select(keymapConfigurable, "Open Antigravity CLI")
+                    settingsDialog.select(keymapConfigurable)
                     return@HyperlinkListener
                 }
             }

@@ -17,10 +17,14 @@ class ArtifactsToolWindowFactory : ToolWindowFactory, DumbAware {
         content.setDisposer(panel)
         toolWindow.contentManager.addContent(content)
 
-        // JetBrains' default state-paint for stripe buttons doesn't visibly change our icon
-        // (it nudges the background, but the icon stays the same colour), so we explicitly
-        // swap to an inverse-colour variant while the tool window is open. IconLoader picks
-        // up the `_dark.svg` variant automatically on dark themes for both states.
+        // Two single-SVG icons, no `_dark.svg` siblings: both files use JetBrains' canonical
+        // icon palette (`#6C707E` for the default, `#000000` for the active variant). The
+        // platform's SVG color patcher re-tints those palette values automatically based on
+        // the current LAF — light themes paint them roughly as-authored; dark themes invert
+        // to a light grey / near-white. Avoid introducing custom hex values here: the patcher
+        // skips colors it doesn't recognise, leaving them dark in both themes (the exact
+        // failure mode that caused the "black icon on dark stripe" bug we previously papered
+        // over with explicit `_dark.svg` companions).
         val normalIcon = IconLoader.getIcon("/icons/antigravity_artifacts.svg", javaClass)
         val activeIcon = IconLoader.getIcon("/icons/antigravity_artifacts_active.svg", javaClass)
 

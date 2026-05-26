@@ -71,6 +71,11 @@ class AntigravitySettingsConfigurable : Configurable {
         // shortcut (no chord is safe across all bundled keymaps — Default, Eclipse, VS, Mac,
         // Emacs, etc. — and a silently overridden user binding is worse than no binding). The
         // hyperlink below opens Settings → Keymap so the user can pick their own.
+        // The label is kept in sync via reset(): the Settings dialog calls Configurable.reset()
+        // whenever this panel becomes the visible one — including after the user navigates
+        // back from the in-dialog Keymap, where they may have rebound the action. The Keymap
+        // configurable updates the live KeymapManager immediately on edit (Apply/Cancel just
+        // commits or rolls back), so reading via KeymapUtil in reset() reflects current state.
         val shortcutValue = JBLabel(currentShortcutText())
         shortcutValueLabel = shortcutValue
 

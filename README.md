@@ -16,9 +16,11 @@ The plugin exposes four MCP tools to `agy`:
 | `ide_get_diagnostics` | Inspections, syntax errors, and warnings for a file (or the active editor) |
 | `ide_open_file` | Open a file at an optional line/column |
 
-When you click the **Start Antigravity Session** toolbar button, `agy` launches
-in an IDE-embedded terminal already wired to the current project — no manual
-configuration steps.
+When you click the **Open Antigravity CLI** toolbar button, `agy` launches in
+an IDE-embedded terminal already wired to the current project — no manual
+configuration steps. By default the button focuses the existing *Antigravity*
+terminal tab if one is open; toggle *Always open a new tab* in settings to
+spawn a fresh session on every click.
 
 ## Requirements
 
@@ -51,6 +53,14 @@ Open **Settings → Tools → Antigravity Companion**.
 - **Path to agy executable** — absolute path to the `agy` binary the plugin
   should launch. Leave blank to auto-detect (`$PATH` + common install dirs).
   The settings panel tells you which path it currently resolves to.
+- **Always open a new tab** — when off (default), clicking the toolbar focuses
+  the existing *Antigravity* terminal tab if one is open; when on, every click
+  spawns a fresh `agy` session.
+- **Keyboard shortcut** — no shortcut is bound by default (no chord is safe
+  across every bundled keymap). Click *Configure shortcut in Keymap settings…*
+  in the panel, or open **Settings → Keymap** directly and search for
+  *Open Antigravity CLI*, to assign one. Multiple parallel `agy` sessions are
+  still supported regardless of how the action is triggered.
 
 No other configuration is required. The plugin manages
 `~/.gemini/config/mcp_config.json` on its own and cleans up after itself when
@@ -60,7 +70,7 @@ projects close.
 
 1. Open a project and the file you want `agy` to see.
 2. Click the lightning ⚡ toolbar button (top-right) or invoke
-   **Start Antigravity Session** from *Find Action* (`⇧⌘A` / `Ctrl+Shift+A`).
+   **Open Antigravity CLI** from *Find Action* (`⇧⌘A` / `Ctrl+Shift+A`).
 3. A terminal tab opens with `agy` running. Ask it about your code — when it
    needs context it will call the plugin's MCP tools transparently.
 
@@ -104,7 +114,7 @@ On project close it removes the config entry and deletes the bridge script.
 
 ## Troubleshooting
 
-**The "Start Antigravity Session" button shows a notification "agy executable
+**The "Open Antigravity CLI" button shows a notification "agy executable
 not found".**
 Open **Settings → Tools → Antigravity Companion** and set the path explicitly,
 or install `agy` to one of the auto-detected locations.

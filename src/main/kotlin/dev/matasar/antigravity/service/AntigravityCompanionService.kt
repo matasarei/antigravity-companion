@@ -21,6 +21,7 @@ import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.wm.ToolWindowManager
 import dev.matasar.antigravity.bridge.StdioBridge
 import org.jetbrains.plugins.terminal.TerminalTabState
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
@@ -149,8 +150,14 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             return
         }
 
+        val reuseTab = !AntigravitySettings.getInstance().alwaysOpenNewTab
+
         ApplicationManager.getApplication().invokeLater {
             try {
+                if (reuseTab && focusExistingAntigravityTab()) {
+                    log.info("Focused existing Antigravity terminal tab (project $projectHash)")
+                    return@invokeLater
+                }
                 val tm = TerminalToolWindowManager.getInstance(project)
                 // Non-deprecated path: configure a TerminalTabState with the working dir, tab
                 // name, and the agy command, then hand it to the default terminal runner. We
@@ -161,7 +168,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 // are invisible to agy and its child commands. `exec` replaces the shell with
                 // agy so there's no zombie shell process in the tree.
                 val tabState = TerminalTabState().apply {
-                    myTabName = "Antigravity"
+                    myTabName = ANTIGRAVITY_TAB_NAME
                     myWorkingDirectory = project.basePath
                     myShellCommand = buildAgyInvocation(agyPath)
                 }
@@ -172,6 +179,25 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 notifySpawnFailure(e)
             }
         }
+    }
+
+    /**
+     * Activates the terminal tool window and selects the first tab named [ANTIGRAVITY_TAB_NAME].
+     *
+     * Returns true if such a tab exists and was focused; false otherwise (caller falls through to
+     * spawning a new session). Note: a tab whose `agy` process has already exited would normally
+     * close itself (we `exec` into agy, so the terminal closes on agy exit), making the stale-tab
+     * case rare enough not to inspect process state here.
+     */
+    private fun focusExistingAntigravityTab(): Boolean {
+        val toolWindow = ToolWindowManager.getInstance(project)
+            .getToolWindow(TERMINAL_TOOL_WINDOW_ID) ?: return false
+        val content = toolWindow.contentManager.contents.firstOrNull {
+            it.displayName == ANTIGRAVITY_TAB_NAME
+        } ?: return false
+        toolWindow.activate(null, true)
+        toolWindow.contentManager.setSelectedContent(content, true)
+        return true
     }
 
     private fun buildAgyInvocation(agyPath: String): List<String> {
@@ -1133,7 +1159,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         private const val LOCK_INITIAL_BACKOFF_MS = 25L
         private const val LOCK_MAX_BACKOFF_MS = 500L
 
-        const val PLUGIN_VERSION: String = "1.2.0"
+        const val PLUGIN_VERSION: String = "1.3.0"
+
+        private const val ANTIGRAVITY_TAB_NAME: String = "Antigravity"
+        // ID of the bundled terminal tool window; stable across IDE versions.
+        private const val TERMINAL_TOOL_WINDOW_ID: String = "Terminal"
 
         /**
          * Sent as the `instructions` field on the MCP `initialize` response. Clients SHOULD

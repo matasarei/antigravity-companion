@@ -14,7 +14,13 @@ import java.io.File
 )
 class AntigravitySettings : PersistentStateComponent<AntigravitySettings.State> {
 
-    data class State(var agyPath: String = "")
+    data class State(
+        var agyPath: String = "",
+        // When true, every toolbar click spawns a brand-new Antigravity terminal tab.
+        // When false (default), the toolbar focuses the existing tab — multiple parallel
+        // agy sessions are still supported by MCP, but most users want a single tab.
+        var alwaysOpenNewTab: Boolean = false,
+    )
 
     private var state = State()
 
@@ -27,6 +33,10 @@ class AntigravitySettings : PersistentStateComponent<AntigravitySettings.State> 
     var agyPath: String
         get() = state.agyPath
         set(value) { state.agyPath = value.trim() }
+
+    var alwaysOpenNewTab: Boolean
+        get() = state.alwaysOpenNewTab
+        set(value) { state.alwaysOpenNewTab = value }
 
     /**
      * Returns the path that should actually be executed: the user-configured value if it

@@ -1159,7 +1159,7 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         private const val LOCK_INITIAL_BACKOFF_MS = 25L
         private const val LOCK_MAX_BACKOFF_MS = 500L
 
-        const val PLUGIN_VERSION: String = "1.3.0"
+        const val PLUGIN_VERSION: String = "1.3.1"
 
         private const val ANTIGRAVITY_TAB_NAME: String = "Antigravity"
         // ID of the bundled terminal tool window; stable across IDE versions.

@@ -12,6 +12,7 @@ import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -222,7 +223,13 @@ class ArtifactsPanel(
             reloadAsync()
             return
         }
-        FileEditorManager.getInstance(project).openFile(vf, true)
+        // Open the plain text editor explicitly rather than `openFile`, which picks the file's
+        // default editor provider. For `.md` artifacts that default is the Markdown editor whose
+        // JCEF preview pane renders a blank screen for files outside the project's content roots —
+        // and brain artifacts at `~/.gemini/antigravity-cli/brain/...` are always out-of-project.
+        // The MCP `ide_open_file` tool already uses `openTextEditor` for the same reason; mirror it
+        // here so double-click/Enter reliably shows the content (see GitHub issue #7).
+        FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, vf), true)
     }
 
     private fun openBrainFolder() {

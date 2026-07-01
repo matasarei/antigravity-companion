@@ -167,10 +167,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
                 // launchd's sparse PATH, so tools like docker-compose / brew-installed binaries
                 // are invisible to agy and its child commands. `exec` replaces the shell with
                 // agy so there's no zombie shell process in the tree.
+                val invocation = buildAgyInvocation(agyPath, project.basePath)
                 val tabState = TerminalTabState().apply {
                     myTabName = ANTIGRAVITY_TAB_NAME
-                    myWorkingDirectory = project.basePath
-                    myShellCommand = buildAgyInvocation(agyPath)
+                    myWorkingDirectory = invocation.workingDirectory
+                    myShellCommand = invocation.command
                 }
                 tm.createNewSession(tm.terminalRunner, tabState)
                 log.info("Spawned agy terminal session for project $projectHash (binary: $agyPath)")
@@ -200,11 +201,26 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         return true
     }
 
-    private fun buildAgyInvocation(agyPath: String): List<String> {
+    /**
+     * How the terminal tab should start agy: the argv to run and the working directory to run it
+     * in (null = let the terminal pick its default, used for WSL where we cd inside the distro
+     * instead of handing a UNC path to the Windows-side terminal process).
+     */
+    private data class AgyInvocation(val command: List<String>, val workingDirectory: String?)
+
+    private fun buildAgyInvocation(agyPath: String, workingDir: String?): AgyInvocation {
+        // WSL2 on a Windows host: PhpStorm is a native Windows process, but agy is a Linux ELF
+        // living under \\wsl.localhost\<distro>\... which Windows CreateProcess cannot execute
+        // directly. Route it through wsl.exe so it runs inside the distro. workingDirectory is left
+        // null (we cd inside the distro) so the Windows-side terminal isn't handed a UNC path.
+        WslLaunch.wslCommand(agyPath, workingDir)?.let { command ->
+            return AgyInvocation(command, workingDirectory = null)
+        }
+
         if (AntigravitySettings.isWindows()) {
-            // Windows: PATH inheritance for GUI-launched apps is generally fine and there's no
-            // direct equivalent of a login shell. Spawn agy directly.
-            return listOf(agyPath)
+            // Native Windows agy.exe: PATH inheritance for GUI-launched apps is generally fine and
+            // there's no direct equivalent of a login shell. Spawn agy directly.
+            return AgyInvocation(listOf(agyPath), workingDir)
         }
         val shell = resolveLoginShell()
         val command = "exec ${shellEscape(agyPath)}"
@@ -214,11 +230,12 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         // POSIX `sh` (e.g. dash on many Linux distros) doesn't reliably accept those flags, so
         // we fall back to plain `-c` when the resolved shell isn't one of the known interactive
         // shells. agy still starts; it just won't see the user's rc-file PATH.
-        return if (supportsLoginInteractiveFlags(shell)) {
+        val argv = if (supportsLoginInteractiveFlags(shell)) {
             listOf(shell, "-l", "-i", "-c", command)
         } else {
             listOf(shell, "-c", command)
         }
+        return AgyInvocation(argv, workingDir)
     }
 
     /**

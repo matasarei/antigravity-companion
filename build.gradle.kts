@@ -15,6 +15,8 @@ repositories {
 dependencies {
     // kotlinx-serialization is the only runtime dep we keep; everything else is in the platform.
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+
+    testImplementation("junit:junit:4.13.2")
 }
 
 intellij {

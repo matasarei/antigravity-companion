@@ -45,7 +45,14 @@ class AntigravitySettings : PersistentStateComponent<AntigravitySettings.State> 
      */
     fun resolvedAgyPath(): String {
         val configured = state.agyPath
-        if (configured.isNotBlank() && File(configured).canExecute()) return configured
+        if (configured.isNotBlank()) {
+            val file = File(configured)
+            // Over the \\wsl.localhost\ (9p) share, Java's canExecute() is unreliable — the
+            // Linux executable bit isn't surfaced through the Windows file API. For a configured
+            // WSL path, accept it as long as it exists; wsl.exe enforces the real exec bit later.
+            val usable = file.canExecute() || (parseWslPath(configured) != null && file.exists())
+            if (usable) return configured
+        }
         return findAgyOnPath() ?: ""
     }
 
@@ -71,5 +78,35 @@ class AntigravitySettings : PersistentStateComponent<AntigravitySettings.State> 
 
         fun isWindows(): Boolean =
             System.getProperty("os.name")?.startsWith("Windows", ignoreCase = true) == true
+
+        /** A Windows UNC path resolved into the WSL distro it lives in and its Linux-side path. */
+        data class WslPath(val distro: String, val linuxPath: String)
+
+        /**
+         * Recognises Windows UNC paths that point into a WSL2 distribution's filesystem:
+         *   \\wsl.localhost\Ubuntu\home\me\.local\bin\agy  → distro=Ubuntu, /home/me/.local/bin/agy
+         *   \\wsl$\Ubuntu\home\me\project                  → distro=Ubuntu, /home/me/project
+         *
+         * Returns null for every non-WSL path (ordinary Windows drive paths, macOS/Linux paths),
+         * so callers can use a non-null result as "this must run inside WSL".
+         */
+        fun parseWslPath(path: String): WslPath? {
+            if (path.isBlank()) return null
+            // Accept either slash style; the UNC prefix can arrive as \\ or //.
+            val norm = path.replace('/', '\\')
+            val lower = norm.lowercase()
+            val prefix = when {
+                lower.startsWith("\\\\wsl.localhost\\") -> "\\\\wsl.localhost\\"
+                lower.startsWith("\\\\wsl\$\\") -> "\\\\wsl\$\\"
+                else -> return null
+            }
+            val rest = norm.substring(prefix.length)
+            val slash = rest.indexOf('\\')
+            // Need both a distro segment and at least one path segment after it.
+            if (slash <= 0 || slash == rest.length - 1) return null
+            val distro = rest.substring(0, slash)
+            val linuxPath = "/" + rest.substring(slash + 1).replace('\\', '/')
+            return WslPath(distro, linuxPath)
+        }
     }
 }

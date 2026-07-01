@@ -190,9 +190,9 @@ build.gradle.kts, gradle.properties, settings.gradle.kts
 
 ## Known limitations
 
-- **WSL2 on Windows.** When running the JetBrains IDE natively on Windows but working on a project located in a WSL2 path (`\\wsl.localhost\...`), the plugin cannot spawn a Linux `agy` binary directly. You must either:
+- **WSL2 on Windows.** When running the JetBrains IDE natively on Windows but working on a project located in a WSL2 path (`\\wsl.localhost\<distro>\...`), the plugin cannot spawn a Linux `agy` binary directly. You must either:
   1. Run the JetBrains IDE itself inside WSL2 (e.g. using JetBrains Gateway or WSLg) and install the plugin and `agy` inside WSL.
-  2. Keep the IDE on Windows, but configure the Antigravity Companion (Settings → Tools → Antigravity Companion) to point to a **Windows native `agy.exe`** binary. The native Windows `agy.exe` can access your WSL2 project files via the `\\wsl.localhost\...` path.
+  2. Keep the IDE on Windows, but configure the Antigravity Companion (Settings → Tools → Antigravity Companion) to point to a **Windows native `agy.exe`** binary. The native Windows `agy.exe` can access your WSL2 project files via the `\\wsl.localhost\<distro>\...` path.
 - **Pull-based only.** The IDE does not push selection changes to `agy`
   mid-conversation; `agy` calls back over MCP when it decides it needs IDE
   state.

@@ -116,7 +116,7 @@ class AntigravitySettingsConfigurable : Configurable {
             })
             
         if (AntigravitySettings.isWindows()) {
-            formBuilder.addComponentToRightColumn(JBLabel("Note for WSL2: Use a Windows native agy.exe or run the IDE inside WSL.").apply {
+            formBuilder.addComponentToRightColumn(JBLabel("<html>Note for WSL2: Use a Windows native agy.exe or run the IDE inside WSL.</html>").apply {
                 foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND
             })
         }

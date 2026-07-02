@@ -190,6 +190,7 @@ build.gradle.kts, gradle.properties, settings.gradle.kts
 
 ## Known limitations
 
+- **WSL2 on Windows.** When running the JetBrains IDE natively on Windows but working on a project located in a WSL2 path (`\\wsl.localhost\<distro>\...`), the plugin cannot spawn a Linux `agy` binary directly. The only supported workaround is to **run the JetBrains IDE itself inside WSL2** (e.g. using JetBrains Gateway or WSLg) and install the plugin and `agy` inside WSL.
 - **Pull-based only.** The IDE does not push selection changes to `agy`
   mid-conversation; `agy` calls back over MCP when it decides it needs IDE
   state.

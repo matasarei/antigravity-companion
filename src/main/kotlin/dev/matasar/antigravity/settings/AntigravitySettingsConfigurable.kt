@@ -109,11 +109,19 @@ class AntigravitySettingsConfigurable : Configurable {
             foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND
         }
 
-        val form = FormBuilder.createFormBuilder()
+        val formBuilder = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("Path to agy executable:"), field, 1, false)
             .addComponentToRightColumn(JBLabel(hint).apply {
                 foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND
             })
+            
+        if (AntigravitySettings.isWindows()) {
+            formBuilder.addComponentToRightColumn(JBLabel("<html>Note for WSL2: For WSL projects, you must run the IDE inside WSL (e.g. via Gateway/WSLg).</html>").apply {
+                foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND
+            })
+        }
+
+        val form = formBuilder
             .addComponent(newTabBox)
             .addComponentToRightColumn(newTabHint)
             .addLabeledComponent(JBLabel("Keyboard shortcut:"), shortcutValue, 1, false)

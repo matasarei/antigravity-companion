@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="src/main/resources/META-INF/pluginIcon.svg" width="120" alt="Antigravity Companion plugin icon">
+  <img src="src/main/resources/META-INF/pluginIcon.svg" width="120" alt="Antigravity CLI Companion plugin icon">
 </p>
 
-# Antigravity Companion for JetBrains IDEs
+# Antigravity CLI Companion for JetBrains IDEs
 
 [![JetBrains Marketplace](https://img.shields.io/jetbrains/plugin/v/31899?label=JetBrains%20Marketplace)](https://plugins.jetbrains.com/plugin/31899-antigravity-companion)
 [![Downloads](https://img.shields.io/jetbrains/plugin/d/31899)](https://plugins.jetbrains.com/plugin/31899-antigravity-companion)
@@ -14,6 +14,12 @@ A JetBrains plugin that bridges the [Antigravity](https://antigravity.google) CL
 (`agy`) with JetBrains IDEs (IntelliJ IDEA, PhpStorm, WebStorm, PyCharm, GoLand,
 and other IntelliJ-based IDEs) so the agent can see your active file, selection,
 open tabs, and inspection diagnostics on demand.
+
+> **Not the official Google extension.** This is an independent, third-party plugin.
+> Google's own Antigravity agent installs from **JetBrains AI → Settings → Agents** and
+> requires IDE 2026.2.1+ — if that is what you are looking for, use it. This plugin serves
+> a different purpose: it runs the Antigravity **CLI** (`agy`) in an IDE terminal and feeds
+> it editor context over MCP, on IDE 2023.2 and up, with no JetBrains AI dependency.
 
 ## Features
 
@@ -58,7 +64,7 @@ See [Building from source](#building-from-source).
 
 ## Configuration
 
-Open **Settings → Tools → Antigravity Companion**.
+Open **Settings → Tools → Antigravity CLI Companion**.
 
 - **Path to agy executable** — absolute path to the `agy` binary the plugin
   should launch. Leave blank to auto-detect (`$PATH` + common install dirs).
@@ -132,7 +138,7 @@ On project close it removes the config entry and deletes the bridge script.
 
 **The "Open Antigravity CLI" button shows a notification "agy executable
 not found".**
-Open **Settings → Tools → Antigravity Companion** and set the path explicitly,
+Open **Settings → Tools → Antigravity CLI Companion** and set the path explicitly,
 or install `agy` to one of the auto-detected locations.
 
 **`agy` answers "I don't have visibility into your IDE".**
@@ -151,7 +157,7 @@ Delete it; the plugin will recreate it on the next project open.
 
 **Editing in the middle of the `agy` prompt garbles the text.**
 Make sure *Fix prompt editing in the IDE terminal* is enabled under
-**Settings → Tools → Antigravity Companion**, then open a new Antigravity tab —
+**Settings → Tools → Antigravity CLI Companion**, then open a new Antigravity tab —
 the terminal name is chosen when the session starts. See below for what is
 actually going on.
 

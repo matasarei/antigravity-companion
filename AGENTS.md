@@ -30,7 +30,7 @@ src/main/
     ├── action/StartSessionAction.kt                ← toolbar button
     ├── service/AntigravityCompanionService.kt      ← MCP server + tool implementations
     ├── settings/AntigravitySettings.kt             ← persistent app-level state (agy path)
-    ├── settings/AntigravitySettingsConfigurable.kt ← Settings → Tools → Antigravity Companion
+    ├── settings/AntigravitySettingsConfigurable.kt ← Settings → Tools → Antigravity CLI Companion
     └── startup/AntigravityStartupActivity.kt       ← eager-init the service on project open
 src/main/resources/
 ├── META-INF/plugin.xml                             ← manifest, services, actions, change notes

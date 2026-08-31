@@ -299,7 +299,10 @@ object ArtifactsRepository {
 
     private val log = Logger.getInstance(ArtifactsRepository::class.java)
     private val UUID_RE = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-    private const val MAX_BRAIN_DIRS = 20
+    // A readdir budget, not a recency window: we list this many conversation dirs per scan and
+    // let artifact mtimes decide what actually surfaces (see listArtifacts). Kept generous
+    // because a dir's own mtime says almost nothing about whether it holds artifacts.
+    private const val MAX_SCANNED_BRAIN_DIRS = 250
     private const val MAX_ARTIFACTS = 100
 
     /** Directory holding all conversations' brain entries, regardless of project. */
@@ -311,19 +314,26 @@ object ArtifactsRepository {
     fun listArtifacts(): List<ArtifactItem> {
         // We do NOT filter by project. The agy CLI's brain dirs live at
         // `~/.gemini/antigravity-cli/brain/<conversation-uuid>/`, and the conversation↔project
-        // mapping is stored inside protobuf .pb files we can't cheaply parse. Instead we list
-        // files from the N most recently modified brain dirs, sorted globally by mtime desc.
-        // In practice the user's currently-active session is always on top (it just wrote);
-        // older sessions from other projects scroll down and are easy to ignore.
+        // mapping is stored inside protobuf .pb files we can't cheaply parse. So we scan every
+        // conversation dir and rank the *files* we find by mtime; the active session's plan or
+        // walkthrough lands on top because it was just written, and older sessions from other
+        // projects scroll down.
+        //
+        // Ranking the dirs by mtime and keeping only the newest handful does NOT work: agy
+        // creates `.system_generated/` (transcripts, per-step output, task logs) at conversation
+        // start and writes into it continuously, which bumps the conversation dir's mtime for the
+        // whole session while the user-facing artifacts — implementation_plan.md, walkthrough.md,
+        // code_review.md, images — may never appear at all. Every busy-but-artifact-less
+        // conversation then evicts a dir that does hold artifacts, and the panel goes empty.
         val brainBase = brainBaseDir() ?: return emptyList()
-        val recentBrainDirs = brainBase.listFiles()
+        val brainDirs = brainBase.listFiles()
             ?.filter { it.isDirectory && UUID_RE.matches(it.name) }
             ?.sortedByDescending { it.lastModified() }
-            ?.take(MAX_BRAIN_DIRS)
+            ?.take(MAX_SCANNED_BRAIN_DIRS)
             ?: return emptyList()
 
         val results = mutableListOf<ArtifactItem>()
-        for (brainDir in recentBrainDirs) {
+        for (brainDir in brainDirs) {
             brainDir.listFiles()
                 ?.asSequence()
                 ?.filter { it.isFile && !it.name.endsWith(".metadata.json") }

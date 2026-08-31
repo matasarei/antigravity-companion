@@ -30,7 +30,7 @@ class AntigravitySettingsConfigurable : Configurable {
     private var shortcutValueLabel: JBLabel? = null
     private var rootPanel: JPanel? = null
 
-    override fun getDisplayName(): String = "Antigravity Companion"
+    override fun getDisplayName(): String = "Antigravity CLI Companion"
 
     override fun createComponent(): JComponent {
         val settings = AntigravitySettings.getInstance()

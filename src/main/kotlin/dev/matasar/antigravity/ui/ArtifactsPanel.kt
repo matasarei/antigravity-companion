@@ -13,6 +13,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -20,6 +21,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.ui.PopupHandler
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
@@ -28,6 +30,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.awt.datatransfer.StringSelection
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
@@ -90,10 +93,18 @@ class ArtifactsPanel(
         }
         val openFolderAction = object : AnAction(
             "Open Brain Folder",
-            "Reveal the agy brain folder in the system file manager",
+            "Open the agy brain folder in the system file manager",
             AllIcons.Nodes.Folder,
         ) {
             override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+            // agy creates the brain directory on its first conversation, so it is genuinely
+            // absent on a fresh install. Grey the button out rather than leave a click that
+            // does nothing. The isDirectory check is filesystem I/O, which is what BGT is for.
+            override fun update(e: AnActionEvent) {
+                e.presentation.isEnabled = ArtifactsRepository.brainBaseDir() != null
+            }
+
             override fun actionPerformed(e: AnActionEvent) {
                 openBrainFolder()
             }
@@ -123,6 +134,32 @@ class ArtifactsPanel(
                 }
             }
         })
+
+        // Right-click menu. Both entries act on the selected row, so the popup trigger has to
+        // move the selection under the cursor first: Swing does not do that for a JList, and
+        // without it the menu would silently act on whatever was selected beforehand.
+        list.addMouseListener(object : MouseAdapter() {
+            // The popup trigger is the press on Windows/Linux but the release on macOS, so
+            // both handlers test for it rather than assuming one or the other.
+            override fun mousePressed(e: MouseEvent) = selectRowUnderCursor(e)
+
+            override fun mouseReleased(e: MouseEvent) = selectRowUnderCursor(e)
+
+            private fun selectRowUnderCursor(e: MouseEvent) {
+                if (!e.isPopupTrigger) return
+                val index = list.locationToIndex(e.point)
+                if (index < 0) return
+                // locationToIndex returns the nearest row for a click past the last one, so
+                // confirm the point is actually inside it before hijacking the selection.
+                val bounds = list.getCellBounds(index, index) ?: return
+                if (bounds.contains(e.point)) list.selectedIndex = index
+            }
+        })
+        PopupHandler.installPopupMenu(
+            list,
+            DefaultActionGroup(copyPathAction(), revealInFileManagerAction()),
+            ActionPlaces.TOOLWINDOW_POPUP,
+        )
 
         // Don't assume the panel was created in response to the tool window opening: the
         // platform may instantiate content while the window is still hidden (e.g. during
@@ -213,6 +250,53 @@ class ArtifactsPanel(
         }, POLL_INTERVAL_MS)
     }
 
+    /**
+     * Copies the artifact's absolute path — the useful thing to paste into a terminal or back
+     * into an `agy` prompt. Artifacts live outside the project's content roots, so the
+     * platform's own "Copy Path" (which works off a VirtualFile in a project view) isn't
+     * available to this list.
+     */
+    private fun copyPathAction(): AnAction =
+        object : AnAction("Copy Path", "Copy the artifact's full path to the clipboard", AllIcons.Actions.Copy) {
+            override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+
+            override fun update(e: AnActionEvent) {
+                e.presentation.isEnabled = list.selectedValue != null
+            }
+
+            override fun actionPerformed(e: AnActionEvent) {
+                val item = list.selectedValue ?: return
+                CopyPasteManager.getInstance().setContents(StringSelection(item.path))
+            }
+        }
+
+    /**
+     * Selects the artifact in the OS file manager. The label is "Reveal in Finder", "Show in
+     * Explorer" or "Show in Files" depending on the platform, which is why it comes from
+     * [RevealFileAction] rather than being hardcoded.
+     */
+    private fun revealInFileManagerAction(): AnAction =
+        object : AnAction(RevealFileAction.getActionName(), "Select the artifact in the system file manager", null) {
+            override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+
+            override fun update(e: AnActionEvent) {
+                e.presentation.isEnabled = list.selectedValue != null && RevealFileAction.isSupported()
+            }
+
+            override fun actionPerformed(e: AnActionEvent) {
+                val item = list.selectedValue ?: return
+                val file = File(item.path)
+                // The list is a 3-second snapshot, so the row can outlive the file (agy prunes
+                // brain entries). Refresh instead of handing the file manager a dead path.
+                if (!file.exists()) {
+                    log.info("Artifact no longer exists on disk: ${item.path}")
+                    reloadAsync()
+                    return
+                }
+                RevealFileAction.openFile(file)
+            }
+        }
+
     private fun openSelected() {
         val item = list.selectedValue ?: return
         // refreshAndFindFileByIoFile normalises path separators (matters on Windows where
@@ -234,7 +318,9 @@ class ArtifactsPanel(
 
     private fun openBrainFolder() {
         val dir = ArtifactsRepository.brainBaseDir() ?: return
-        RevealFileAction.openFile(dir)
+        // openDirectory shows the folder's contents; openFile would select it inside its
+        // parent, leaving the user in ~/.gemini/antigravity-cli/ rather than in brain/.
+        RevealFileAction.openDirectory(dir)
     }
 
     override fun dispose() {

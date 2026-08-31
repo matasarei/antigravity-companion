@@ -9,8 +9,9 @@
       <p>
         <b>Independent third-party plugin &mdash; not Google's official Antigravity
         extension.</b> Google's own agent installs from <b>JetBrains AI &rarr; Settings
-        &rarr; Agents</b> and requires IDE 2026.2.1+; if you want that first-party agent
-        panel, use it. This plugin has a different purpose: it runs the Antigravity
+        &rarr; Agents</b> and requires IDE 2026.2.1+ &mdash; see
+        <a href="https://antigravity.google/docs/ide/extensions/jetbrains">Google's official setup guide</a>. If you want that first-party
+        agent panel, use it. This plugin has a different purpose: it runs the Antigravity
         <b>CLI</b> (<code>agy</code>) in an IDE terminal and feeds it editor context over
         MCP, on IDE 2023.2 and up, with no JetBrains AI dependency.
       </p>
@@ -63,6 +64,7 @@
       <ul>
         <li><b>Renamed to <em>Antigravity CLI Companion</em></b>: the old name read as though this were Google's own extension. It is not &mdash; it is an independent third-party plugin, published months before any official JetBrains integration existed. Google's own agent installs from <b>JetBrains AI &rarr; Settings &rarr; Agents</b> and requires IDE 2026.2.1+; this plugin does something different, running the Antigravity <b>CLI</b> (<code>agy</code>) in an IDE terminal and feeding it editor context over MCP on IDE 2023.2 and up, with no JetBrains AI dependency. The settings page is now <b>Settings &rarr; Tools &rarr; Antigravity CLI Companion</b>; nothing else moves, and existing installs update in place.</li>
         <li><b>The Artifacts tool window lists artifacts again</b>: it had been ranking conversations by directory mtime and keeping only the 20 most recent. Current <code>agy</code> creates <code>.system_generated/</code> (transcripts, per-step output, task logs) at conversation start and writes into it for the whole session, so every busy conversation looked recent whether or not it ever produced an artifact &mdash; and each one evicted a conversation that actually held a plan or walkthrough. On a real brain directory the panel was showing 3 of 34 artifacts. Ranking now happens on the artifact files themselves, so the active session's <code>implementation_plan.md</code> or <code>walkthrough.md</code> lands on top the moment it is written.</li>
+        <li><b>Artifacts: right-click menu</b>: right-clicking an artifact now offers <em>Copy Path</em> and <em>Reveal in Finder</em> / <em>Show in Explorer</em> / <em>Show in Files</em> (the label follows the OS). The click also moves the selection to the row under the cursor, so the menu always acts on the artifact you actually clicked.</li>
       </ul>
       <h3>1.4.1</h3>
       <ul>

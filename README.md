@@ -17,7 +17,8 @@ open tabs, and inspection diagnostics on demand.
 
 > **Not the official Google extension.** This is an independent, third-party plugin.
 > Google's own Antigravity agent installs from **JetBrains AI → Settings → Agents** and
-> requires IDE 2026.2.1+ — if that is what you are looking for, use it. This plugin serves
+> requires IDE 2026.2.1+ — see [Google's official setup guide](https://antigravity.google/docs/ide/extensions/jetbrains).
+> If that is what you are looking for, use it. This plugin serves
 > a different purpose: it runs the Antigravity **CLI** (`agy`) in an IDE terminal and feeds
 > it editor context over MCP, on IDE 2023.2 and up, with no JetBrains AI dependency.
 

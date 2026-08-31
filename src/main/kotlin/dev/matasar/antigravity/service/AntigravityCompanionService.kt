@@ -1,6 +1,6 @@
 package dev.matasar.antigravity.service
 
-import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.ide.plugins.PluginManager
 import com.intellij.notification.Notification
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
@@ -15,7 +15,6 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.impl.DocumentMarkupModel
-import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
@@ -1194,9 +1193,11 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         // Read from the plugin descriptor rather than hardcoded, so it cannot drift away from
         // the version in plugin.xml / gradle.properties the way a literal did (it sat at 1.3.1
         // through three releases). This is what agy is told as serverInfo.version on initialize.
-        // The id is the one declared in META-INF/plugin.xml.
+        // getPluginByClass resolves through the class's own classloader, so it needs no plugin-id
+        // literal to keep in sync with plugin.xml. Note PluginManager, not PluginManagerCore —
+        // the latter is marked @ApiStatus.Internal and must not be called from a plugin.
         val PLUGIN_VERSION: String by lazy {
-            PluginManagerCore.getPlugin(PluginId.getId("dev.matasar.antigravity-companion"))
+            PluginManager.getPluginByClass(AntigravityCompanionService::class.java)
                 ?.version
                 ?: "unknown"
         }

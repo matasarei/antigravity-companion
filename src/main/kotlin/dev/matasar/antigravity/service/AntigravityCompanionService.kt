@@ -1,6 +1,5 @@
 package dev.matasar.antigravity.service
 
-import com.intellij.ide.plugins.PluginManager
 import com.intellij.notification.Notification
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
@@ -1190,17 +1189,24 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         private const val LOCK_INITIAL_BACKOFF_MS = 25L
         private const val LOCK_MAX_BACKOFF_MS = 500L
 
-        // Read from the plugin descriptor rather than hardcoded, so it cannot drift away from
-        // the version in plugin.xml / gradle.properties the way a literal did (it sat at 1.3.1
-        // through three releases). This is what agy is told as serverInfo.version on initialize.
-        // getPluginByClass resolves through the class's own classloader, so it needs no plugin-id
-        // literal to keep in sync with plugin.xml. Note PluginManager, not PluginManagerCore —
-        // the latter is marked @ApiStatus.Internal and must not be called from a plugin.
+        // What agy is told as serverInfo.version on initialize. Baked in at build time from
+        // gradle.properties by the generateVersionProperties task, rather than hardcoded (a
+        // literal here sat at 1.3.1 through three releases) and rather than read back from the
+        // platform: every API that resolves a plugin descriptor — PluginManagerCore.getPlugin,
+        // PluginManager.getPluginByClass — is @ApiStatus.Internal, and the Marketplace verifier
+        // rejects a plugin that calls one.
         val PLUGIN_VERSION: String by lazy {
-            PluginManager.getPluginByClass(AntigravityCompanionService::class.java)
-                ?.version
-                ?: "unknown"
+            runCatching {
+                AntigravityCompanionService::class.java
+                    .getResourceAsStream(VERSION_RESOURCE)
+                    ?.use { stream ->
+                        java.util.Properties().apply { load(stream) }.getProperty("version")
+                    }
+            }.getOrNull()?.takeIf { it.isNotBlank() } ?: "unknown"
         }
+
+        private const val VERSION_RESOURCE: String =
+            "/META-INF/antigravity-companion-version.properties"
 
         // agy's own flag for "auto-approve all tool permission requests without prompting".
         // Note agy still prompts for admin escalation even with this set, and file access

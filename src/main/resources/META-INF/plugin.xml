@@ -7,6 +7,12 @@
 
     <description><![CDATA[
       <p>
+        Runs the <a href="https://antigravity.google">Antigravity</a> CLI (<code>agy</code>)
+        in a JetBrains IDE terminal (PhpStorm, IntelliJ IDEA, WebStorm, PyCharm, GoLand, etc.)
+        and feeds it live editor context over MCP &mdash; active file, selection, open tabs,
+        and inspection diagnostics, on demand.
+      </p>
+      <p>
         <b>Independent third-party plugin &mdash; not Google's official Antigravity
         extension.</b> Google's own agent installs from <b>JetBrains AI &rarr; Settings
         &rarr; Agents</b> and requires IDE 2026.2.1+ &mdash; see
@@ -14,12 +20,6 @@
         agent panel, use it. This plugin has a different purpose: it runs the Antigravity
         <b>CLI</b> (<code>agy</code>) in an IDE terminal and feeds it editor context over
         MCP, on IDE 2023.2 and up, with no JetBrains AI dependency.
-      </p>
-      <p>
-        Bridges the <a href="https://antigravity.google">Antigravity</a> CLI (<code>agy</code>)
-        with JetBrains IDEs (PhpStorm, IntelliJ IDEA, WebStorm, PyCharm, GoLand, etc.)
-        so the agent can see your active file, selection, open tabs, and inspection
-        diagnostics on demand.
       </p>
       <p>
         The plugin runs a small local MCP (Model Context Protocol) server inside the IDE

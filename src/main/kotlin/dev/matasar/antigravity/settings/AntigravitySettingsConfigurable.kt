@@ -1,6 +1,7 @@
 package dev.matasar.antigravity.settings
 
 import com.intellij.ide.DataManager
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.keymap.KeymapUtil
 import com.intellij.openapi.options.Configurable
@@ -14,6 +15,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import dev.matasar.antigravity.action.StartSessionAction
+import dev.matasar.antigravity.terminal.TerminfoCompat
 import java.awt.BorderLayout
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -68,17 +70,12 @@ class AntigravitySettingsConfigurable : Configurable {
         }
         fixCursorMovementBox = cursorFixBox
 
-        val cursorFixHint = JBLabel(
-            "<html>The IDE terminal ignores <code>CSI Z</code> (cursor backward tabulation), " +
-                "so editing in the middle of the <code>agy</code> prompt garbles the display. " +
-                "Launching <code>agy</code> under an equivalent non-<code>xterm</code> terminal " +
-                "name avoids the sequence. Compiles a private <code>agyterm</code> entry into " +
-                "<code>~/.terminfo</code> on first use, falling back to <code>nsterm</code>. " +
-                "Turn off if you run <code>ssh</code> or containers from inside <code>agy</code> " +
-                "and need the terminal name passed through unchanged.</html>"
-        ).apply {
-            foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND
-        }
+        val cursorFixHint = wrappingHint(
+            "Launches <code>agy</code> under a non-<code>xterm</code> terminal name so that " +
+                "editing in the middle of the prompt no longer garbles the display. Turn off " +
+                "if you run <code>ssh</code> or containers from inside <code>agy</code> and " +
+                "need <code>TERM</code> passed through unchanged."
+        )
 
         val newTabHint = JBLabel(
             "When off, clicking the toolbar focuses the existing Antigravity tab. " +
@@ -179,7 +176,15 @@ class AntigravitySettingsConfigurable : Configurable {
         val settings = AntigravitySettings.getInstance()
         settings.agyPath = pathField?.text ?: ""
         settings.alwaysOpenNewTab = alwaysOpenNewTabBox?.isSelected ?: false
+
+        val cursorFixWasOn = settings.fixPromptCursorMovement
         settings.fixPromptCursorMovement = fixCursorMovementBox?.isSelected ?: true
+        // Project open skips the terminfo lookup while the workaround is off, so switching it
+        // on here is what triggers the first resolution. Do it off the EDT: it shells out to
+        // infocmp and possibly tic, and this runs on the UI thread.
+        if (settings.fixPromptCursorMovement && !cursorFixWasOn) {
+            ApplicationManager.getApplication().executeOnPooledThread { TerminfoCompat.warmUp() }
+        }
     }
 
     override fun reset() {
@@ -203,10 +208,22 @@ class AntigravitySettingsConfigurable : Configurable {
         return text.ifBlank { "Not set" }
     }
 
+    /**
+     * Swing lays an HTML label out on a single line unless it is given an explicit width, so a
+     * long hint stretches the whole Settings panel sideways instead of wrapping. Pin the wrap
+     * width, scaled so it still holds at HiDPI and at larger IDE font sizes.
+     */
+    private fun wrappingHint(html: String): JBLabel =
+        JBLabel("<html><body style='width:${JBUI.scale(HINT_WRAP_WIDTH)}px'>$html</body></html>")
+            .apply { foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND }
+
     companion object {
         // Stable ID of the Keymap configurable (registered by the platform in plugin.xml since
         // very old IDE versions). Used both for in-dialog navigation and as the fallback target
         // when opening a fresh Settings dialog.
+        /** Wrap column for multi-line context hints, in unscaled px. */
+        private const val HINT_WRAP_WIDTH: Int = 460
+
         private const val KEYMAP_CONFIGURABLE_ID: String = "preferences.keymap"
     }
 }

@@ -95,8 +95,20 @@ object TerminfoCompat {
         }
     }
 
-    /** Resolve in the background so the first toolbar click does not pay for the lookup. */
+    /**
+     * Resolve in the background so the first toolbar click does not pay for the lookup.
+     *
+     * Does nothing while the workaround is switched off. Resolution can compile a file into
+     * the user's `~/.terminfo`, and a disabled feature has no business writing to `$HOME` —
+     * least of all at project open, for a user who may never launch `agy` at all. The guard
+     * lives here rather than in [compute] on purpose: [resolvedTerm] caches for the IDE's
+     * lifetime, so refusing to resolve there would pin a `null` that survives the user
+     * switching the setting back on. Enabling it calls this again (see the settings panel);
+     * failing that, the launch path resolves lazily and pays for one or two process spawns
+     * once.
+     */
     fun warmUp() {
+        if (!AntigravitySettings.getInstance().fixPromptCursorMovement) return
         resolvedTerm()
     }
 

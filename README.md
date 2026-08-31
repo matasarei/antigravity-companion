@@ -66,6 +66,12 @@ Open **Settings → Tools → Antigravity Companion**.
 - **Always open a new tab** — when off (default), clicking the toolbar focuses
   the existing *Antigravity* terminal tab if one is open; when on, every click
   spawns a fresh `agy` session.
+- **Fix prompt editing in the IDE terminal** — on by default (not shown on
+  Windows). Launches `agy` under a non-`xterm` terminal name so it stops
+  emitting `CSI Z`, which the IDE's terminal emulator ignores. See
+  [Prompt editing workaround](#prompt-editing-workaround). Turn it off if you
+  run `ssh` or containers from inside `agy` and need `TERM` passed through
+  unchanged.
 - **Keyboard shortcut** — no shortcut is bound by default (no chord is safe
   across every bundled keymap). Click *Configure shortcut in Keymap settings…*
   in the panel, or open **Settings → Keymap** directly and search for
@@ -143,6 +149,67 @@ each time a project opens.
 **`mcp_config.json` is corrupted.**
 Delete it; the plugin will recreate it on the next project open.
 
+**Editing in the middle of the `agy` prompt garbles the text.**
+Make sure *Fix prompt editing in the IDE terminal* is enabled under
+**Settings → Tools → Antigravity Companion**, then open a new Antigravity tab —
+the terminal name is chosen when the session starts. See below for what is
+actually going on.
+
+### Prompt editing workaround
+
+`agy` is a charmbracelet (Bubble Tea) TUI whose renderer picks the cheapest
+encoding for each cursor move: backspace for one column, `CSI n D` for a few,
+and `CSI Z` — CBT, *cursor backward tabulation* — to jump back by tab stops.
+JediTerm, the emulator behind **both** the classic and the reworked JetBrains
+terminal, parses `CSI Z` but does not implement it: it falls through to the
+default branch, logs `Unhandled Control Sequence` and does nothing. The cursor
+silently stays put while `agy` believes it moved, so the next repaint — which
+writes `<new char><rest of line>` and then walks the cursor back — lands several
+columns too far right and paints the tail of the line over itself.
+
+`agy`'s own buffer is never wrong, which is why the text looks correct again the
+moment you submit it. Switching terminal engines in Settings does not help
+(`TerminalStarterEx` extends `TerminalStarter`, whose `createEmulator()` returns
+a `JediEmulator`).
+
+You can confirm the gap in any terminal — the `*` belongs at column 9:
+
+```bash
+printf 'ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\033[17G\033[Z*\n'
+```
+
+A working terminal prints `ABCDEFGH*JKLMNOPQRSTUVWXYZ`; JetBrains prints
+`ABCDEFGHIJKLMNOP*RSTUVWXYZ`.
+
+`agy` enables the tab optimisation purely on `TERM` carrying an `xterm` prefix —
+the terminfo database is never consulted, so cancelling `cbt` on an
+`xterm`-named entry changes nothing. The plugin therefore launches `agy` under a
+terminal name that is *not* `xterm*`: a private `agyterm-256color` entry
+(literally `xterm-256color` under a different name, compiled into `~/.terminfo`
+on first use) so anything `agy` spawns still gets exactly the xterm key
+encodings it expects, falling back to `nsterm-256color` from the standard
+ncurses database when `tic` is unavailable. The byte cost is unmeasurable, and
+alt-screen, kitty keyboard and bracketed paste all still negotiate.
+
+The `-256color` suffix is load-bearing, not cosmetic. The IDE terminal exports
+`TERM=xterm-256color` and no `COLORTERM`, so `TERM` is the only signal `agy` has
+for colour depth. Its detector (`charmbracelet/colorprofile`) splits `TERM` on
+`-` and matches the parts against a fixed table; a bare `agyterm` matches
+nothing and drops `agy` to the 16-colour ANSI profile, where its greys and
+slates collapse onto the nearest ANSI colour and the whole UI turns blue. Only
+the first part is tested for the `xterm` prefix, so `<name>-256color` keeps the
+full palette *and* keeps `CSI Z` suppressed. If you rename the entry, keep the
+suffix.
+
+`agy`'s light/dark palette is a separate matter and is not something the plugin
+sets: it comes from `colorScheme` in `~/.gemini/antigravity-cli/settings.json`,
+changed via `/settings` → *Color Scheme*. JediTerm does not answer OSC 11
+background-colour queries, so `agy` cannot detect your IDE theme on its own —
+pick the scheme that matches it.
+
+The real fix belongs in JediTerm, where `Tabulator.previousTab(int)` is already
+implemented in `JediTerminal$DefaultTabulator` and called by nothing.
+
 ## Building from source
 
 ### Prerequisites
@@ -191,6 +258,7 @@ src/main/
     ├── service/AntigravityCompanionService.kt    ← MCP server + tool impls
     ├── settings/AntigravitySettings.kt           ← persistent state
     ├── settings/AntigravitySettingsConfigurable.kt ← Settings panel
+    ├── terminal/TerminfoCompat.kt                 ← JediTerm CSI Z workaround
     └── startup/AntigravityStartupActivity.kt     ← eager-init on project open
 src/main/resources/
 ├── META-INF/plugin.xml                           ← plugin manifest

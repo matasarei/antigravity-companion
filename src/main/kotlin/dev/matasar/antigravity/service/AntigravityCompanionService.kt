@@ -26,6 +26,7 @@ import dev.matasar.antigravity.bridge.StdioBridge
 import org.jetbrains.plugins.terminal.TerminalTabState
 import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import dev.matasar.antigravity.settings.AntigravitySettings
+import dev.matasar.antigravity.terminal.TerminfoCompat
 import dev.matasar.antigravity.settings.AntigravitySettingsConfigurable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +113,9 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         runStep("start MCP server") { startMcpServer() }
         runStep("write MCP bridge script") { writeBridgeScript() }
         runStep("register in mcp_config.json") { registerInMcpConfig() }
+        // Resolving TERM shells out to infocmp/tic. Do it now, off the EDT, so the first
+        // toolbar click doesn't pay for it. The result is cached for the IDE's lifetime.
+        scope.launch { TerminfoCompat.warmUp() }
     }
 
     private inline fun runStep(label: String, block: () -> Unit) {
@@ -207,7 +211,20 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
             return listOf(agyPath)
         }
         val shell = resolveLoginShell()
-        val command = "exec ${shellEscape(agyPath)}"
+        // JediTerm ignores CSI Z, which agy emits to move the cursor left by tab stops —
+        // editing mid-prompt then paints over itself. agy only enables that optimisation when
+        // TERM has an `xterm` prefix, so launching it under an equivalent non-`xterm` terminal
+        // name avoids the sequence entirely. See TerminfoCompat for the full write-up.
+        val term = if (AntigravitySettings.getInstance().fixPromptCursorMovement) {
+            TerminfoCompat.resolvedTerm()
+        } else {
+            null
+        }
+        val command = if (term != null) {
+            "exec env TERM=${shellEscape(term)} ${shellEscape(agyPath)}"
+        } else {
+            "exec ${shellEscape(agyPath)}"
+        }
         // -l (login) loads .zprofile / .bash_profile (where Homebrew, asdf, nvm, etc. typically
         //          add to PATH).
         // -i (interactive) loads .zshrc / .bashrc (where some users keep PATH tweaks too).

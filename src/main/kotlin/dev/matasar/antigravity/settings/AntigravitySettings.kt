@@ -20,6 +20,10 @@ class AntigravitySettings : PersistentStateComponent<AntigravitySettings.State> 
         // When false (default), the toolbar focuses the existing tab — multiple parallel
         // agy sessions are still supported by MCP, but most users want a single tab.
         var alwaysOpenNewTab: Boolean = false,
+        // When true, agy is launched under a non-`xterm` TERM so its renderer stops emitting
+        // CSI Z (cursor backward tabulation), which JediTerm ignores — see TerminfoCompat.
+        // Without this, editing in the middle of the agy prompt garbles the display.
+        var fixPromptCursorMovement: Boolean = true,
     )
 
     private var state = State()
@@ -37,6 +41,10 @@ class AntigravitySettings : PersistentStateComponent<AntigravitySettings.State> 
     var alwaysOpenNewTab: Boolean
         get() = state.alwaysOpenNewTab
         set(value) { state.alwaysOpenNewTab = value }
+
+    var fixPromptCursorMovement: Boolean
+        get() = state.fixPromptCursorMovement
+        set(value) { state.fixPromptCursorMovement = value }
 
     /**
      * Returns the path that should actually be executed: the user-configured value if it

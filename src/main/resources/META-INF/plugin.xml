@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.matasar.antigravity-companion</id>
     <name>Antigravity Companion</name>
-    <version>1.3.3</version>
+    <version>1.4.0</version>
 
     <vendor email="matasar.ei@gmail.com" url="https://github.com/matasarei/antigravity-companion">Yevhen Matasar</vendor>
 
@@ -51,6 +51,10 @@
     ]]></description>
 
     <change-notes><![CDATA[
+      <h3>1.4.0</h3>
+      <ul>
+        <li><b>Prompt editing no longer garbles the terminal</b>: editing in the middle of the <code>agy</code> prompt used to scramble the display — inserted text landed several columns too far right and the tail of the line was duplicated. <code>agy</code> moves the cursor left with <code>CSI Z</code> (cursor backward tabulation), which JediTerm — the emulator behind both the classic and the reworked IDE terminal — parses but does not implement, so the cursor silently stayed put while <code>agy</code> believed it had moved. <code>agy</code> only enables that optimisation when <code>TERM</code> carries an <code>xterm</code> prefix, so the plugin now launches it under an equivalent non-<code>xterm</code> terminal name (a private <code>agyterm-256color</code> entry compiled into <code>~/.terminfo</code>, falling back to <code>nsterm-256color</code>). The <code>-256color</code> suffix is load-bearing: the IDE terminal exports no <code>COLORTERM</code>, so <code>TERM</code> is the only signal <code>agy</code> has for colour depth, and a name without it silently drops the palette to 16 colours. Nothing else is lost — 256 colours, alt-screen, kitty keyboard and bracketed paste all still negotiate — and the byte cost is unmeasurable. Toggle <em>Fix prompt editing in the IDE terminal</em> under <strong>Settings → Tools → Antigravity Companion</strong> if you need the terminal name passed through unchanged.</li>
+      </ul>
       <h3>1.3.3</h3>
       <ul>
         <li><b>WSL2 support documentation</b>: Added notes to the README and Settings UI clarifying that for WSL2 projects, the IDE itself must be run inside WSL (e.g., via JetBrains Gateway) rather than using a Windows-side configuration. (Fixes #9)</li>

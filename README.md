@@ -6,7 +6,6 @@
 
 [![JetBrains Marketplace](https://img.shields.io/jetbrains/plugin/v/31899?label=JetBrains%20Marketplace)](https://plugins.jetbrains.com/plugin/31899-antigravity-companion)
 [![Downloads](https://img.shields.io/jetbrains/plugin/d/31899)](https://plugins.jetbrains.com/plugin/31899-antigravity-companion)
-[![GitHub release](https://img.shields.io/github/v/release/matasarei/antigravity-companion)](https://github.com/matasarei/antigravity-companion/releases)
 [![IntelliJ Platform](https://img.shields.io/badge/IntelliJ%20Platform-2023.2%2B-blue)](https://plugins.jetbrains.com/docs/intellij/welcome.html)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

@@ -26,3 +26,6 @@ out/
 
 # Claude Code per-project tooling settings
 .claude/
+
+# Task briefs / plans (gku)
+.tasks/

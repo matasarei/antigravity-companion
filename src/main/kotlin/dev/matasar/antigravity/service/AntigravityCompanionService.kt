@@ -1,5 +1,6 @@
 package dev.matasar.antigravity.service
 
+import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.notification.Notification
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
@@ -14,6 +15,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.impl.DocumentMarkupModel
+import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
@@ -205,10 +207,19 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     private fun buildAgyInvocation(agyPath: String): List<String> {
+        // Opt-in, off by default. agy's own default tool-permission mode (`request-review`) is
+        // what stops to ask before it runs a command; this flag turns that off for the sessions
+        // the plugin launches. Deliberately a launch argument rather than a write into
+        // ~/.gemini/antigravity-cli/settings.json: agy rewrites that file itself at runtime, so
+        // an IDE-side read-modify-write would race it and could clobber a hand-curated
+        // allowlist. As a launch flag it also leaves a plain-terminal agy untouched, and
+        // unticking the box takes effect on the next session with nothing to clean up.
+        val autoApprove = AntigravitySettings.getInstance().autoApproveTools
+
         if (AntigravitySettings.isWindows()) {
             // Windows: PATH inheritance for GUI-launched apps is generally fine and there's no
             // direct equivalent of a login shell. Spawn agy directly.
-            return listOf(agyPath)
+            return listOfNotNull(agyPath, SKIP_PERMISSIONS_FLAG.takeIf { autoApprove })
         }
         val shell = resolveLoginShell()
         // JediTerm ignores CSI Z, which agy emits to move the cursor left by tab stops —
@@ -220,10 +231,14 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         } else {
             null
         }
+        val agyCommand = buildString {
+            append(shellEscape(agyPath))
+            if (autoApprove) append(' ').append(shellEscape(SKIP_PERMISSIONS_FLAG))
+        }
         val command = if (term != null) {
-            "exec env TERM=${shellEscape(term)} ${shellEscape(agyPath)}"
+            "exec env TERM=${shellEscape(term)} $agyCommand"
         } else {
-            "exec ${shellEscape(agyPath)}"
+            "exec $agyCommand"
         }
         // -l (login) loads .zprofile / .bash_profile (where Homebrew, asdf, nvm, etc. typically
         //          add to PATH).
@@ -1176,7 +1191,20 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
         private const val LOCK_INITIAL_BACKOFF_MS = 25L
         private const val LOCK_MAX_BACKOFF_MS = 500L
 
-        const val PLUGIN_VERSION: String = "1.3.1"
+        // Read from the plugin descriptor rather than hardcoded, so it cannot drift away from
+        // the version in plugin.xml / gradle.properties the way a literal did (it sat at 1.3.1
+        // through three releases). This is what agy is told as serverInfo.version on initialize.
+        // The id is the one declared in META-INF/plugin.xml.
+        val PLUGIN_VERSION: String by lazy {
+            PluginManagerCore.getPlugin(PluginId.getId("dev.matasar.antigravity-companion"))
+                ?.version
+                ?: "unknown"
+        }
+
+        // agy's own flag for "auto-approve all tool permission requests without prompting".
+        // Note agy still prompts for admin escalation even with this set, and file access
+        // outside the workspace root stays governed by its own allowNonWorkspaceAccess setting.
+        private const val SKIP_PERMISSIONS_FLAG: String = "--dangerously-skip-permissions"
 
         private const val ANTIGRAVITY_TAB_NAME: String = "Antigravity"
         // ID of the bundled terminal tool window; stable across IDE versions.

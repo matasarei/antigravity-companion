@@ -24,6 +24,11 @@ class AntigravitySettings : PersistentStateComponent<AntigravitySettings.State> 
         // CSI Z (cursor backward tabulation), which JediTerm ignores — see TerminfoCompat.
         // Without this, editing in the middle of the agy prompt garbles the display.
         var fixPromptCursorMovement: Boolean = true,
+        // When true, agy is launched with --dangerously-skip-permissions, so it carries out tool
+        // calls — shell commands included — without stopping to ask. agy's own default is its
+        // `request-review` tool-permission mode, which is what produces the prompts. Off by
+        // default and deliberately so: this hands agy unattended execution in the workspace.
+        var autoApproveTools: Boolean = false,
     )
 
     private var state = State()
@@ -45,6 +50,10 @@ class AntigravitySettings : PersistentStateComponent<AntigravitySettings.State> 
     var fixPromptCursorMovement: Boolean
         get() = state.fixPromptCursorMovement
         set(value) { state.fixPromptCursorMovement = value }
+
+    var autoApproveTools: Boolean
+        get() = state.autoApproveTools
+        set(value) { state.autoApproveTools = value }
 
     /**
      * Returns the path that should actually be executed: the user-configured value if it

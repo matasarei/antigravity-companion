@@ -9,6 +9,7 @@ import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.options.ex.Settings
 import com.intellij.openapi.ui.TextBrowseFolderListener
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.ui.HyperlinkLabel
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
@@ -27,6 +28,7 @@ class AntigravitySettingsConfigurable : Configurable {
     private var pathField: TextFieldWithBrowseButton? = null
     private var alwaysOpenNewTabBox: JBCheckBox? = null
     private var fixCursorMovementBox: JBCheckBox? = null
+    private var autoApproveBox: JBCheckBox? = null
     private var shortcutValueLabel: JBLabel? = null
     private var rootPanel: JPanel? = null
 
@@ -51,9 +53,11 @@ class AntigravitySettingsConfigurable : Configurable {
 
         val detected = AntigravitySettings.findAgyOnPath()
         val hint = if (detected != null) {
-            "Leave blank to auto-detect. Currently resolved to: $detected"
+            "Leave blank to auto-detect. Currently resolved to: " +
+                "<code>${StringUtil.escapeXmlEntities(detected)}</code>"
         } else {
-            "Leave blank to auto-detect. Searched \$PATH, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin — none had agy."
+            "Leave blank to auto-detect. Searched <code>\$PATH</code>, <code>~/.local/bin</code>, " +
+                "<code>/opt/homebrew/bin</code>, <code>/usr/local/bin</code> — none had agy."
         }
 
         val newTabBox = JBCheckBox("Always open a new tab").apply {
@@ -77,12 +81,30 @@ class AntigravitySettingsConfigurable : Configurable {
                 "need <code>TERM</code> passed through unchanged."
         )
 
-        val newTabHint = JBLabel(
+        val newTabHint = wrappingHint(
             "When off, clicking the toolbar focuses the existing Antigravity tab. " +
                 "Turn on to spawn a fresh agy session on every click."
-        ).apply {
-            foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND
+        )
+
+        val autoApproveCheckBox = JBCheckBox("Auto-approve tool calls (skip permission prompts)").apply {
+            isSelected = settings.autoApproveTools
+            toolTipText = "Launches agy with --dangerously-skip-permissions, so it runs commands " +
+                "without stopping to ask. Applies only to sessions started from this IDE."
         }
+        autoApproveBox = autoApproveCheckBox
+
+        val autoApproveHint = wrappingHint(
+            "Runs <code>agy</code> with <code>--dangerously-skip-permissions</code>, so it " +
+                "carries out shell commands and other tool calls without asking first &mdash; " +
+                "the closest thing it has to an auto mode. <b>Leave this off unless you are " +
+                "watching the session.</b> It affects only sessions launched from this IDE: an " +
+                "<code>agy</code> you start in a plain terminal is unchanged, and nothing is " +
+                "written to agy's own configuration. Two things still stop for you regardless: " +
+                "admin escalation always prompts, and access outside the workspace root stays " +
+                "governed by agy's own <code>allowNonWorkspaceAccess</code> setting. Takes " +
+                "effect for the next session you open &mdash; terminal tabs already running " +
+                "keep the mode they started with."
+        )
 
         // Read-only view of the current keymap binding. We deliberately don't ship a default
         // shortcut (no chord is safe across all bundled keymaps — Default, Eclipse, VS, Mac,
@@ -128,14 +150,15 @@ class AntigravitySettingsConfigurable : Configurable {
 
         val formBuilder = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("Path to agy executable:"), field, 1, false)
-            .addComponentToRightColumn(JBLabel(hint).apply {
-                foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND
-            })
+            .addComponentToRightColumn(wrappingHint(hint))
             
         if (AntigravitySettings.isWindows()) {
-            formBuilder.addComponentToRightColumn(JBLabel("<html>Note for WSL2: For WSL projects, you must run the IDE inside WSL (e.g. via Gateway/WSLg).</html>").apply {
-                foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND
-            })
+            formBuilder.addComponentToRightColumn(
+                wrappingHint(
+                    "Note for WSL2: For WSL projects, you must run the IDE inside WSL " +
+                        "(e.g. via Gateway/WSLg)."
+                )
+            )
         }
 
         formBuilder
@@ -149,6 +172,10 @@ class AntigravitySettingsConfigurable : Configurable {
                 .addComponent(cursorFixBox)
                 .addComponentToRightColumn(cursorFixHint)
         }
+
+        formBuilder
+            .addComponent(autoApproveCheckBox)
+            .addComponentToRightColumn(autoApproveHint)
 
         val form = formBuilder
             .addLabeledComponent(JBLabel("Keyboard shortcut:"), shortcutValue, 1, false)
@@ -169,13 +196,16 @@ class AntigravitySettingsConfigurable : Configurable {
         val flagChanged = (alwaysOpenNewTabBox?.isSelected ?: false) != settings.alwaysOpenNewTab
         val cursorFixChanged =
             (fixCursorMovementBox?.isSelected ?: true) != settings.fixPromptCursorMovement
-        return pathChanged || flagChanged || cursorFixChanged
+        val autoApproveChanged =
+            (autoApproveBox?.isSelected ?: false) != settings.autoApproveTools
+        return pathChanged || flagChanged || cursorFixChanged || autoApproveChanged
     }
 
     override fun apply() {
         val settings = AntigravitySettings.getInstance()
         settings.agyPath = pathField?.text ?: ""
         settings.alwaysOpenNewTab = alwaysOpenNewTabBox?.isSelected ?: false
+        settings.autoApproveTools = autoApproveBox?.isSelected ?: false
 
         val cursorFixWasOn = settings.fixPromptCursorMovement
         settings.fixPromptCursorMovement = fixCursorMovementBox?.isSelected ?: true
@@ -192,6 +222,7 @@ class AntigravitySettingsConfigurable : Configurable {
         pathField?.text = settings.agyPath
         alwaysOpenNewTabBox?.isSelected = settings.alwaysOpenNewTab
         fixCursorMovementBox?.isSelected = settings.fixPromptCursorMovement
+        autoApproveBox?.isSelected = settings.autoApproveTools
         shortcutValueLabel?.text = currentShortcutText()
     }
 
@@ -199,6 +230,7 @@ class AntigravitySettingsConfigurable : Configurable {
         pathField = null
         alwaysOpenNewTabBox = null
         fixCursorMovementBox = null
+        autoApproveBox = null
         shortcutValueLabel = null
         rootPanel = null
     }

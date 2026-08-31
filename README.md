@@ -79,6 +79,16 @@ Open **Settings → Tools → Antigravity CLI Companion**.
   [Prompt editing workaround](#prompt-editing-workaround). Turn it off if you
   run `ssh` or containers from inside `agy` and need `TERM` passed through
   unchanged.
+- **Auto-approve tool calls (skip permission prompts)** — **off by default.**
+  Launches `agy` with `--dangerously-skip-permissions`, so it runs shell
+  commands and other tool calls without stopping to ask — the closest thing it
+  has to an auto mode. Only affects sessions started from this IDE: an `agy`
+  you launch in a plain terminal is unchanged, and nothing is written to
+  `agy`'s own configuration. Two things still stop for you regardless — admin
+  escalation always prompts, and access outside the workspace root stays
+  governed by `agy`'s own `allowNonWorkspaceAccess` setting. Takes effect for
+  the next session you open; terminal tabs already running keep the mode they
+  started with. Leave it off unless you are watching the session.
 - **Keyboard shortcut** — no shortcut is bound by default (no chord is safe
   across every bundled keymap). Click *Configure shortcut in Keymap settings…*
   in the panel, or open **Settings → Keymap** directly and search for

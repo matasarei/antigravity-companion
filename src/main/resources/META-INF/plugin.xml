@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.matasar.antigravity-companion</id>
     <name>Antigravity CLI Companion</name>
-    <version>1.5.0</version>
+    <version>1.6.0</version>
 
     <vendor email="matasar.ei@gmail.com" url="https://github.com/matasarei/antigravity-companion">Yevhen Matasar</vendor>
 
@@ -60,6 +60,11 @@
     ]]></description>
 
     <change-notes><![CDATA[
+      <h3>1.6.0</h3>
+      <ul>
+        <li><b>New setting: <em>Auto-approve tool calls (skip permission prompts)</em></b> &mdash; <b>off by default</b>. <code>agy</code> ships with its <code>request-review</code> tool-permission mode as the default, which is why it stops to ask before running each command. Ticking this box launches it with <code>--dangerously-skip-permissions</code> instead, so a session runs uninterrupted. It is a launch argument, not a config edit: only sessions started from this IDE are affected, an <code>agy</code> you run in a plain terminal is unchanged, and the plugin still writes nothing to <code>~/.gemini/antigravity-cli/settings.json</code> &mdash; <code>agy</code> rewrites that file itself, so editing it from the IDE would risk clobbering a hand-curated allowlist. Two things still prompt regardless: admin escalation, and access outside the workspace root (governed by <code>agy</code>'s own <code>allowNonWorkspaceAccess</code>). Applies to the next session you open; tabs already running keep the mode they started with.</li>
+        <li><b>Long setting descriptions no longer run off the edge of the panel</b>: the hints under <em>Always open a new tab</em> and <em>Path to agy executable</em> were plain single-line labels, which Swing lays out without wrapping &mdash; the text was simply clipped at the right edge of the dialog (&ldquo;&hellip;spawn a fresh agy session on every c&rdquo;). They now wrap at the same width as the other hints, as does the WSL2 note on Windows, which had markup but no width to wrap against.</li>
+      </ul>
       <h3>1.5.0</h3>
       <ul>
         <li><b>Renamed to <em>Antigravity CLI Companion</em></b>: the old name read as though this were Google's own extension. It is not &mdash; it is an independent third-party plugin, published months before any official JetBrains integration existed. Google's own agent installs from <b>JetBrains AI &rarr; Settings &rarr; Agents</b> and requires IDE 2026.2.1+; this plugin does something different, running the Antigravity <b>CLI</b> (<code>agy</code>) in an IDE terminal and feeding it editor context over MCP on IDE 2023.2 and up, with no JetBrains AI dependency. The settings page is now <b>Settings &rarr; Tools &rarr; Antigravity CLI Companion</b>; nothing else moves, and existing installs update in place.</li>

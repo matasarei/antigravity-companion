@@ -141,6 +141,13 @@
             id="Antigravity Companion"
             displayType="BALLOON"/>
 
+        <!-- The IDE blames whichever plugin it finds in a failing stack trace, so platform
+             assertions raised by code we merely called are reported to us. This tells the user
+             which of those are known and harmless (see issue #12); everything else gets a
+             prefilled GitHub issue. -->
+        <errorHandler
+            implementation="dev.matasar.antigravity.diagnostic.CompanionErrorReportSubmitter"/>
+
         <toolWindow
             id="Antigravity Artifacts"
             anchor="right"

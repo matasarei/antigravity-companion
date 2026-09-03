@@ -10,10 +10,9 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.fileEditor.impl.text.TextEditorProvider
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
@@ -300,37 +299,21 @@ class ArtifactsPanel(
 
     private fun openSelected() {
         val item = list.selectedValue ?: return
-        // Deliberately off the EDT. `openTextEditor` is documented as EDT-only, and on the EDT
-        // FileEditorManagerImpl waits for the editor composite by pumping a nested event loop
-        // (blockingWaitForCompositeFileOpen). Editor state is then restored inside that nested
-        // pump — in a write-unsafe context, with PSI not yet committed — which the platform
-        // reports as two internal errors (see GitHub issue #12). Called from a background
-        // thread, `openFile` takes the platform's coroutine path instead: no nested pump, and
-        // it still returns only once the composite is available.
-        ApplicationManager.getApplication().executeOnPooledThread {
-            // refreshAndFindFileByIoFile normalises path separators (matters on Windows where
-            // File.absolutePath uses backslashes, while VFS path APIs expect forward slashes).
-            // It is a synchronous VFS refresh, which belongs off the EDT anyway.
-            val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(item.path))
-            if (vf == null) {
-                log.info("Selected artifact no longer exists on disk: ${item.path}")
-                reloadAsync()
-                return@executeOnPooledThread
-            }
-            if (disposed || project.isDisposed) return@executeOnPooledThread
-            val editorManager = FileEditorManager.getInstance(project)
-            editorManager.openFile(vf, true)
-            // `openFile` selects the file's default editor provider. For `.md` artifacts that is
-            // the Markdown editor, whose JCEF preview pane renders a blank screen for files
-            // outside the project's content roots — and brain artifacts at
-            // `~/.gemini/antigravity-cli/brain/...` are always out-of-project. Switch the
-            // composite to the plain text editor so double-click/Enter reliably shows the
-            // content (see GitHub issue #7).
-            ApplicationManager.getApplication().invokeLater({
-                if (project.isDisposed || !vf.isValid) return@invokeLater
-                editorManager.setSelectedEditor(vf, TextEditorProvider.getInstance().editorTypeId)
-            }, ModalityState.defaultModalityState())
+        // refreshAndFindFileByIoFile normalises path separators (matters on Windows where
+        // File.absolutePath uses backslashes, while VFS path APIs expect forward slashes).
+        val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(item.path))
+        if (vf == null) {
+            log.info("Selected artifact no longer exists on disk: ${item.path}")
+            reloadAsync()
+            return
         }
+        // Open the plain text editor explicitly rather than `openFile`, which picks the file's
+        // default editor provider. For `.md` artifacts that default is the Markdown editor whose
+        // JCEF preview pane renders a blank screen for files outside the project's content roots —
+        // and brain artifacts at `~/.gemini/antigravity-cli/brain/...` are always out-of-project.
+        // The MCP `ide_open_file` tool already uses `openTextEditor` for the same reason; mirror it
+        // here so double-click/Enter reliably shows the content (see GitHub issue #7).
+        FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, vf), true)
     }
 
     private fun openBrainFolder() {

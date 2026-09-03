@@ -8,6 +8,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
@@ -17,6 +18,8 @@ import com.intellij.openapi.editor.impl.DocumentMarkupModel
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileEditor.TextEditor
+import com.intellij.openapi.fileEditor.impl.text.TextEditorProvider
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
@@ -738,23 +741,30 @@ class AntigravityCompanionService(private val project: Project) : Disposable {
     }
 
     private fun openFile(path: String, line: Int?, column: Int?): String {
-        var result = ""
-        ApplicationManager.getApplication().invokeAndWait {
-            val vf = LocalFileSystem.getInstance().findFileByPath(path)
-            if (vf == null) {
-                result = "File not found: $path"
-                return@invokeAndWait
-            }
-            val descriptor = OpenFileDescriptor(
+        val vf = LocalFileSystem.getInstance().findFileByPath(path) ?: return "File not found: $path"
+        // MCP requests are served on Dispatchers.IO, and the open deliberately stays there.
+        // `openTextEditor` is EDT-only, and on the EDT the platform waits for the editor
+        // composite by pumping a nested event loop, which makes it restore editor state in a
+        // write-unsafe context with PSI not yet committed — two internal errors reported by the
+        // IDE (GitHub issue #12). `openFile` off the EDT takes the coroutine path instead and
+        // returns once the composite is available. See ArtifactsPanel.openSelected.
+        val editorManager = FileEditorManager.getInstance(project)
+        editorManager.openFile(vf, true)
+        ApplicationManager.getApplication().invokeLater({
+            if (project.isDisposed || !vf.isValid) return@invokeLater
+            // Prefer the plain text editor over the file's default provider, as the artifacts
+            // tool window does, so `line`/`column` land on a caret the agent can reason about.
+            editorManager.setSelectedEditor(vf, TextEditorProvider.getInstance().editorTypeId)
+            if (line == null && column == null) return@invokeLater
+            val editor = (editorManager.getSelectedEditor(vf) as? TextEditor)?.editor ?: return@invokeLater
+            OpenFileDescriptor(
                 project,
                 vf,
                 (line?.minus(1))?.coerceAtLeast(0) ?: 0,
                 (column?.minus(1))?.coerceAtLeast(0) ?: 0,
-            )
-            FileEditorManager.getInstance(project).openTextEditor(descriptor, true)
-            result = "Opened $path${line?.let { " (line $it)" }.orEmpty()}"
-        }
-        return result
+            ).navigateIn(editor)
+        }, ModalityState.defaultModalityState())
+        return "Opened $path${line?.let { " (line $it)" }.orEmpty()}"
     }
 
     // ---------------------------------------------------------------- Bridge script
